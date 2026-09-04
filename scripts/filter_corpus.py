@@ -1,3 +1,18 @@
+# This script filters the raw Open Australian Legal Corpus for the project.
+# It keeps NSW court decisions from 2010 onwards that mention the
+# Civil Liability Act 2002 and are from NSWSC, NSWCA or NSWDC.
+#
+# It also removes duplicate judgments using version_id and saves a copy
+# of the Civil Liability Act so it can be processed separately later.
+#
+# Outputs:
+# - data/filtered/judgments.jsonl
+# - data/filtered/civil_liability_act.json
+# - data/filtered/filter_report.json
+#
+# The main purpose of this script is to reduce the large raw corpus into
+# a smaller, relevant dataset that can be used by the next processing stage.
+
 import json
 import re
 from pathlib import Path
