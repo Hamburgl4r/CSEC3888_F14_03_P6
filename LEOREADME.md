@@ -24,9 +24,13 @@ Download the Open Australian Legal Corpus here:
 
 https://huggingface.co/datasets/isaacus/open-australian-legal-corpus
 
+Create a folder data/ 
+
+Within data/ create folder raw/
+
 Place the downloaded file here:
 
-```text
+```
 data/raw/corpus.jsonl
 ````
 
