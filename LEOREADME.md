@@ -4,31 +4,40 @@ This branch contains the dataset filtering and processing work for the project.
 
 ## What it does
 
-`filter_corpus.py`
-- Filters the Open Australian Legal Corpus
-- Keeps NSWSC, NSWCA and NSWDC cases from 2010 onwards
-- Keeps cases that mention the Civil Liability Act 2002
-- Removes duplicates
-- Saves the Civil Liability Act separately
+`filter_corpus.py`:
 
-`process_corpus.py`
-- Cleans the filtered data
-- Splits judgments into smaller chunks
-- Keeps metadata such as citation, court, date, URL and paragraph numbers
-- Splits the Civil Liability Act into sections
-- Prepares the data for retrieval / embeddings
+- Filters the Open Australian Legal Corpus.
+- Keeps NSWSC, NSWCA and NSWDC cases from 2010 onwards.
+- Keeps cases that mention the Civil Liability Act 2002.
+- Removes duplicates and saves the Act separately.
+
+`process_corpus.py`:
+
+- Parses all four NSW judgment paragraph formats, including the 2011-2014
+  `1Text` style where extraction dropped the separator after the number.
+- Reconstructs paragraph numbers lost when HTML ordered lists restart.
+- Rejects trailing lists of orders instead of mistaking them for the body.
+- Marks judgments without reliable numbering as `citation_available: false`.
+- Keeps every retrieval chunk at or below 3,000 characters.
+- Extracts catchwords, cited cases and cited legislation into structured data.
+- Links chunks only to supported Civil Liability Act sections.
+- Splits the Act into sections and schedule clauses with unique IDs.
+- Keeps Part, Division and Schedule hierarchy for filtering.
 
 ## Corpus download
 
-Download the Open Australian Legal Corpus here:
+Download the Open Australian Legal Corpus:
 
 https://huggingface.co/datasets/isaacus/open-australian-legal-corpus
 
-Place the downloaded file here:
+Place the full `corpus.jsonl` file here:
 
 ```text
 data/raw/corpus.jsonl
-````
+```
+
+The project brief pins dataset revision `ef45e3f`. Do not use the partial
+Parquet preview shown on the dataset web page.
 
 ## Run
 
@@ -39,40 +48,44 @@ python3 scripts/filter_corpus.py
 python3 scripts/process_corpus.py
 ```
 
-## Why the data files are not on GitHub
+The raw and generated data files are ignored by Git because of their size.
+They can be recreated by running the scripts above.
 
-The raw corpus and generated filtered/processed files are large, so they are not committed to GitHub.
+## Outputs
 
-They can be recreated at any time by downloading the corpus and running the two scripts.
+Filtering creates:
 
-````markdown
-## Results
+- `data/filtered/civil_liability_act.json`
+- `data/filtered/filter_report.json`
+- `data/filtered/judgments.jsonl`
 
-After running:
+Processing creates:
+
+- `data/processed/judgment_chunks.jsonl`
+- `data/processed/judgment_metadata.jsonl`
+- `data/processed/legislation_chunks.jsonl`
+- `data/processed/processing_report.json`
+
+## Citation safety
+
+`paragraph_numbering` has one of three values:
+
+- `original`: paragraph markers in the corpus were already continuous.
+- `reconstructed`: paragraph order was recovered after the source conversion
+  reset visible ordered-list markers.
+- `unavailable`: no reliable paragraph sequence was found.
+
+Only chunks with `citation_available: true` may be displayed as pinpoint
+paragraph citations. Unavailable chunks can still be searched, but the
+application must not invent a paragraph number for them.
+
+Oversized source paragraphs are split into fragments. Every fragment retains
+the same paragraph number and includes `paragraph_fragment` metadata.
+
+## Tests
+
+Run:
 
 ```bash
-python3 scripts/filter_corpus.py
-````
-
-the following files will be created in `data/filtered`:
-
-* `civil_liability_act.json` - contains the saved Civil Liability Act 2002 used by the project
-* `filter_report.json` - contains a summary of the filtering results, including the number of judgments found for each court
-* `judgments.jsonl` - contains the filtered NSW court judgments that mention the Civil Liability Act 2002
-
-After running:
-
-```bash
-python3 scripts/process_corpus.py
-```
-
-the following files will be created in `data/processed`:
-
-* `judgment_chunks.jsonl` - contains the filtered judgments split into smaller chunks while keeping useful metadata such as citation, court, date, URL and paragraph numbers
-* `legislation_chunks.jsonl` - contains the Civil Liability Act split into smaller section-level chunks
-* `processing_report.json` - contains a summary of how many judgments, chunks and legislation sections were processed
-
-The processed files are intended to be used in the next stage of the project for retrieval, embeddings and the knowledge base.
-
-```
+python3 -m unittest discover -s tests -v
 ```
