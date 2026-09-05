@@ -180,15 +180,18 @@ def build_case_references(
         neutral_citations = extract_medium_neutral_citations(cited_case)
         first_neutral = neutral_citations[0] if neutral_citations else None
         baseline_match = None
+        matched_neutral = None
         for neutral in neutral_citations:
             baseline_match = baseline_case_index.get(neutral["citation"])
             if baseline_match:
+                matched_neutral = neutral
                 break
+        primary_neutral = matched_neutral or first_neutral
 
         baseline_candidate = bool(
-            first_neutral
-            and first_neutral["court"] in BASELINE_CASE_COURTS
-            and first_neutral["year"] >= 2010
+            primary_neutral
+            and primary_neutral["court"] in BASELINE_CASE_COURTS
+            and primary_neutral["year"] >= 2010
         )
         # This split prevents evaluation from treating HCA/FCA/older NSW cases
         # as retrieval failures when their full text is intentionally absent.
@@ -205,8 +208,8 @@ def build_case_references(
             {
                 "text": cited_case,
                 "medium_neutral_citations": neutral_citations,
-                "parsed_court": first_neutral["court"] if first_neutral else None,
-                "parsed_year": first_neutral["year"] if first_neutral else None,
+                "parsed_court": primary_neutral["court"] if primary_neutral else None,
+                "parsed_year": primary_neutral["year"] if primary_neutral else None,
                 "baseline_candidate": baseline_candidate,
                 "in_baseline": baseline_match is not None,
                 "baseline_status": baseline_status,

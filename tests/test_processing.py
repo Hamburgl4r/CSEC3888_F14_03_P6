@@ -334,6 +334,17 @@ class CaseReferenceTests(unittest.TestCase):
         self.assertEqual(refs[0]["matching_version_id"], "case_nswca_20")
         self.assertEqual(refs[0]["discussing_paragraph_numbers"], [13])
 
+    def test_uses_matched_neutral_citation_as_primary(self):
+        refs = build_case_references(
+            ["Parallel citation [2004] HCA 1; Example v Person [2018] NSWCA 20"],
+            self.baseline,
+            self.paragraph_lookup,
+        )
+        self.assertEqual(refs[0]["baseline_status"], "in_baseline")
+        self.assertTrue(refs[0]["baseline_candidate"])
+        self.assertEqual(refs[0]["parsed_court"], "NSWCA")
+        self.assertEqual(refs[0]["parsed_year"], 2018)
+
     def test_nsw_case_can_be_eligible_but_not_indexed(self):
         refs = build_case_references(
             ["Missing v Case [2018] NSWSC 999"],
