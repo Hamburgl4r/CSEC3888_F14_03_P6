@@ -9,9 +9,13 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from parse_judgements import parse_judgment, parse_paragraphs
 from process_corpus import (
     MAX_CHUNK_CHARS,
+    build_baseline_case_index,
+    build_case_references,
+    build_paragraph_lookup,
     build_legislation_references,
     extract_chunk_act_references,
     extract_document_act_references,
+    extract_medium_neutral_citations,
     extract_section_references,
     make_legislation_chunks,
     make_judgment_chunks,
@@ -200,6 +204,23 @@ Decision:                 2. Judgment for the defendant.
         self.assertEqual(parsed["status"], "unavailable")
         self.assertEqual(parsed["paragraphs"], [])
 
+    def test_rejects_pdf_only_table_of_contents_as_paragraphs(self):
+        text = """NOTE: This decision contains over 1900 paragraphs and images.
+Because of its size the decision has been published via a PDF document.
+1. Introduction [1]
+2. Background [12]
+3. Liability [40]
+4. Causation [67]
+5. Damages [90]
+6. Orders [120]
+7. Acronyms [130]
+8. Names [140]
+9. Amendments [150]
+10. Disclaimer [160]"""
+        parsed = parse_paragraphs(text)
+        self.assertEqual(parsed["status"], "unavailable")
+        self.assertEqual(parsed["paragraphs"], [])
+
     # A valid excerpt can begin above paragraph 1, so long monotonic runs are
     # allowed when they look like the real body.
     def test_keeps_long_leading_run_when_numbering_restarts_late(self):
@@ -259,6 +280,82 @@ JUDGMENT
         self.assertEqual(len(header["cases_cited"]), 2)
 
 
+class CaseReferenceTests(unittest.TestCase):
+    def setUp(self):
+        self.baseline_docs = [
+            {
+                "version_id": "case_nswca_20",
+                "citation": "Example v Person [2018] NSWCA 20",
+                "parsed_court": "NSWCA",
+                "date": "2018-05-01",
+                "url": "https://example.test/case_nswca_20",
+            }
+        ]
+        self.baseline = build_baseline_case_index(self.baseline_docs)
+        self.paragraphs = [
+            {
+                "paragraph_number": 12,
+                "text": "[12] Strong v Woolworths Ltd was discussed.",
+            },
+            {
+                "paragraph_number": 13,
+                "text": "[13] Example v Person [2018] NSWCA 20 was followed.",
+            },
+        ]
+        self.paragraph_lookup = build_paragraph_lookup(self.paragraphs)
+
+    def test_extracts_medium_neutral_citation_parts(self):
+        citations = extract_medium_neutral_citations(
+            "Strong v Woolworths Ltd [2012] HCA 5"
+        )
+        self.assertEqual(citations[0]["citation"], "[2012] HCA 5")
+        self.assertEqual(citations[0]["court"], "HCA")
+        self.assertEqual(citations[0]["year"], 2012)
+
+    def test_marks_high_court_case_outside_baseline(self):
+        refs = build_case_references(
+            ["Strong v Woolworths Ltd [2012] HCA 5"],
+            self.baseline,
+            self.paragraph_lookup,
+        )
+        self.assertEqual(refs[0]["baseline_status"], "outside_baseline")
+        self.assertFalse(refs[0]["in_baseline"])
+        self.assertFalse(refs[0]["full_text_available"])
+        self.assertEqual(refs[0]["discussing_paragraph_numbers"], [12])
+
+    def test_matches_actual_indexed_judgment(self):
+        refs = build_case_references(
+            ["Example v Person [2018] NSWCA 20"],
+            self.baseline,
+            self.paragraph_lookup,
+        )
+        self.assertEqual(refs[0]["baseline_status"], "in_baseline")
+        self.assertTrue(refs[0]["baseline_candidate"])
+        self.assertEqual(refs[0]["matching_version_id"], "case_nswca_20")
+        self.assertEqual(refs[0]["discussing_paragraph_numbers"], [13])
+
+    def test_nsw_case_can_be_eligible_but_not_indexed(self):
+        refs = build_case_references(
+            ["Missing v Case [2018] NSWSC 999"],
+            self.baseline,
+            self.paragraph_lookup,
+        )
+        self.assertEqual(refs[0]["baseline_status"], "eligible_but_not_indexed")
+        self.assertTrue(refs[0]["baseline_candidate"])
+        self.assertFalse(refs[0]["in_baseline"])
+        self.assertIsNone(refs[0]["matching_version_id"])
+
+    def test_unclassified_without_medium_neutral_citation(self):
+        refs = build_case_references(
+            ["Brodie v Singleton Shire Council (2001) 206 CLR 512"],
+            self.baseline,
+            self.paragraph_lookup,
+        )
+        self.assertEqual(refs[0]["baseline_status"], "unclassified")
+        self.assertIsNone(refs[0]["parsed_court"])
+        self.assertIsNone(refs[0]["parsed_year"])
+
+
 # Legislation tests protect Act section parsing and bounded retrieval chunks.
 class LegislationParsingTests(unittest.TestCase):
     # Schedule clauses can reuse section numbers, so IDs must include context.
@@ -311,7 +408,10 @@ Schedule 2 Transferred provisions
 # Act reference tests keep NSW Civil Liability Act sections tied to the right Act.
 class ActReferenceTests(unittest.TestCase):
     def setUp(self):
-        self.order = ["1", "5B", "5C", "5D", "5E", "56"]
+        self.order = [
+            "1", "3", "3B", "5B", "5C", "5D", "5E",
+            "13", "15B", "43", "56", "58", "64", "69",
+        ]
         self.valid = set(self.order)
 
     def test_subsection_numbers_do_not_become_sections(self):
@@ -343,6 +443,58 @@ class ActReferenceTests(unittest.TestCase):
             self.order,
         )
         self.assertEqual(sections, ["5D"])
+
+    def test_other_act_reference_overrides_document_level_sections(self):
+        sections, _ = extract_chunk_act_references(
+            "Section 64 of the Civil Procedure Act 2005 (NSW) provides the "
+            "power to amend the pleadings.",
+            ["64"],
+            self.valid,
+            self.order,
+        )
+        self.assertEqual(sections, [])
+
+    def test_mixed_chunk_keeps_legitimate_cla_sections(self):
+        sections, _ = extract_chunk_act_references(
+            "The dispute was referred to in s 58 of the Motor Accidents "
+            "Compensation Act 1999 (NSW). Sections 3B and 15B of the "
+            "Civil Liability Act 2002 (NSW) are separate issues.",
+            ["3B", "15B", "58"],
+            self.valid,
+            self.order,
+        )
+        self.assertEqual(sections, ["3B", "15B"])
+
+    def test_separate_other_act_section_does_not_mask_cla_section(self):
+        sections, _ = extract_chunk_act_references(
+            "Some persons are entitled to a pension under s 43 of the Social "
+            "Security Act 1991. Section 13 of the Civil Liability Act 2002 "
+            "(NSW) remains relevant.",
+            ["13", "43"],
+            self.valid,
+            self.order,
+        )
+        self.assertEqual(sections, ["13"])
+
+    def test_that_act_reference_keeps_other_act_context(self):
+        sections, _ = extract_chunk_act_references(
+            "Section 69 of the Evidence Act relevantly provides the rule. "
+            "The opinion was excluded by s 69(3) of that Act.",
+            ["69"],
+            self.valid,
+            self.order,
+        )
+        self.assertEqual(sections, [])
+
+    def test_later_same_section_uses_prior_other_act_context(self):
+        sections, _ = extract_chunk_act_references(
+            "The evidence was admissible under s 69(2)(a) of the Evidence Act. "
+            "That means s 69 still applied to the document.",
+            ["69"],
+            self.valid,
+            self.order,
+        )
+        self.assertEqual(sections, [])
 
     def test_accepts_explicit_civil_liability_act_reference(self):
         sections, _ = extract_chunk_act_references(
@@ -431,6 +583,8 @@ class ProcessedOutputValidationTests(unittest.TestCase):
                 )
                 process_corpus.OUTPUT_JUDGMENT_METADATA.write_text(
                     '{"version_id":"case_1",'
+                    '"cases_cited":[],'
+                    '"case_references":[],'
                     '"civil_liability_act_sections":["5D"],'
                     '"legislation_references":[{'
                     '"text":"Civil Liability Act 2002 (NSW), s 5D",'

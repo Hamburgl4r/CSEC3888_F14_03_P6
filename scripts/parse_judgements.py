@@ -79,6 +79,11 @@ LARGE_GROUP_MARKERS = 20
 # stay well below the character limit.
 MAX_SINGLE_PARAGRAPH_FRACTION = 0.5
 MAX_SINGLE_PARAGRAPH_CHARS = 20000
+PDF_ONLY_NOTICE_RE = re.compile(
+    r"NOTE:\s+This decision contains\b.*?\bpublished\b.*?\bPDF\b",
+    re.I | re.S,
+)
+TOC_PINPOINT_RE = re.compile(r"\[\d+\](?:\s*-\s*\[\d+\])?\s*$")
 
 
 def _normalise_label(label: str) -> str:
@@ -338,6 +343,14 @@ def parse_paragraphs(text: str) -> dict[str, Any]:
             longest > MAX_SINGLE_PARAGRAPH_CHARS
             and longest > MAX_SINGLE_PARAGRAPH_FRACTION * body_length
         ):
+            paragraphs = []
+
+    if paragraphs and PDF_ONLY_NOTICE_RE.search(text):
+        toc_like = sum(
+            bool(TOC_PINPOINT_RE.search(item["text"]))
+            for item in paragraphs[: min(20, len(paragraphs))]
+        )
+        if toc_like >= min(10, len(paragraphs)):
             paragraphs = []
 
     return {

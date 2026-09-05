@@ -31,6 +31,9 @@ OUTPUT_LEGISLATION = OUTPUT_DIR / "legislation_chunks.jsonl"
 OUTPUT_REPORT = OUTPUT_DIR / "processing_report.json"
 
 MAX_CHUNK_CHARS = 3000
+
+# Citation patterns used throughout the processor. Keep these near the top so
+# changes to recognised courts, Acts, or section syntax are easy to audit.
 TARGET_ACT_RE = re.compile(
     r"\bCivil\s+Liability\s+Act\b\s*(?:,\s*)?"
     r"(?:(?:\(\s*NSW\s*\)\s*)?(?:2002|\(\s*2002\s*\))|"
@@ -56,6 +59,24 @@ RAW_SECTION_REFERENCE_RE = re.compile(
     r"\d+[A-Za-z]*(?:\([^)\s]+\))*)*)",
     re.I,
 )
+ACT_AFTER_SECTION_RE = re.compile(
+    r"^\s*(?:\([^)\s]+\))*\s+of\s+(?:the\s+)?"
+    r"(?P<title>[A-Z][A-Za-z0-9&'’(),/-]*"
+    r"(?:\s+[A-Za-z0-9&'’(),/-]+){0,12}\s+Act"
+    r"(?:\s+\d{4})?(?:\s*\([^)]+\))?)"
+)
+ACT_PRONOUN_AFTER_SECTION_RE = re.compile(
+    r"^\s*(?:\([^)\s]+\))*\s+of\s+(?:that|the)\s+Act\b", re.I
+)
+MEDIUM_NEUTRAL_CITATION_RE = re.compile(
+    r"\[(?P<year>\d{4})\]\s+(?P<court>[A-Z][A-Z0-9]{1,12})\s+(?P<number>\d+)"
+)
+BASELINE_CASE_COURTS = {"NSWSC", "NSWCA", "NSWDC"}
+CASE_NAME_STOP_RE = re.compile(r"\s+(?:\[\d{4}\]|\(\d{4}\)|\(\d{1,3}\s)", re.I)
+
+
+# ---------------------------------------------------------------------------
+# Shared text and citation helpers
 
 
 def clean_text(text: str) -> str:
@@ -64,6 +85,148 @@ def clean_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     return text.strip()
+
+
+def normalize_lookup_text(text: str) -> str:
+    """Normalise strings for citation matching, not for display."""
+    return re.sub(r"\s+", " ", text or "").strip().upper()
+
+
+def extract_medium_neutral_citations(text: str) -> list[dict[str, Any]]:
+    """Extract medium-neutral citation tokens such as ``[2012] HCA 5``."""
+    citations = []
+    seen = set()
+    for match in MEDIUM_NEUTRAL_CITATION_RE.finditer(text or ""):
+        citation = normalize_lookup_text(match.group(0))
+        if citation in seen:
+            continue
+        seen.add(citation)
+        citations.append(
+            {
+                "citation": citation,
+                "year": int(match.group("year")),
+                "court": match.group("court").upper(),
+                "number": int(match.group("number")),
+            }
+        )
+    return citations
+
+
+def _case_name_search_key(citation: str) -> str:
+    """Use the leading case name as a fallback when no neutral cite appears."""
+    name = CASE_NAME_STOP_RE.split(citation or "", maxsplit=1)[0]
+    return normalize_lookup_text(name)
+
+
+def build_baseline_case_index(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index the judgments that are actually present in the retrieval corpus."""
+    index: dict[str, dict[str, Any]] = {}
+    for doc in docs:
+        for neutral in extract_medium_neutral_citations(doc.get("citation") or ""):
+            index.setdefault(
+                neutral["citation"],
+                {
+                    "version_id": doc.get("version_id"),
+                    "citation": doc.get("citation"),
+                    "court": doc.get("parsed_court"),
+                    "date": doc.get("date"),
+                    "url": doc.get("url"),
+                },
+            )
+    return index
+
+
+def find_case_discussion_paragraphs(
+    cited_case: str,
+    medium_neutral_citations: list[dict[str, Any]],
+    paragraph_lookup: list[tuple[int, str]],
+) -> list[int]:
+    """Find source paragraphs in this judgment that mention a cited case."""
+    needles = [item["citation"] for item in medium_neutral_citations]
+    case_name = _case_name_search_key(cited_case)
+    if len(case_name) >= 12:
+        needles.append(case_name)
+
+    paragraph_numbers = []
+    for paragraph_number, paragraph_text in paragraph_lookup:
+        if any(needle and needle in paragraph_text for needle in needles):
+            paragraph_numbers.append(paragraph_number)
+    return paragraph_numbers
+
+
+def build_paragraph_lookup(paragraphs: list[dict[str, Any]]) -> list[tuple[int, str]]:
+    """Pre-normalise paragraph text once so case-reference lookup stays fast."""
+    return [
+        (
+            paragraph["paragraph_number"],
+            normalize_lookup_text(paragraph.get("text") or ""),
+        )
+        for paragraph in paragraphs
+    ]
+
+
+def build_case_references(
+    cases_cited: list[str],
+    baseline_case_index: dict[str, dict[str, Any]],
+    paragraph_lookup: list[tuple[int, str]],
+) -> list[dict[str, Any]]:
+    """Classify cited cases against the actual indexed judgment baseline.
+
+    A NSWSC/NSWCA/NSWDC citation from 2010 onward is only a candidate. It is
+    marked ``in_baseline`` only if its neutral citation exists in this corpus.
+    """
+    references = []
+    for cited_case in cases_cited:
+        neutral_citations = extract_medium_neutral_citations(cited_case)
+        first_neutral = neutral_citations[0] if neutral_citations else None
+        baseline_match = None
+        for neutral in neutral_citations:
+            baseline_match = baseline_case_index.get(neutral["citation"])
+            if baseline_match:
+                break
+
+        baseline_candidate = bool(
+            first_neutral
+            and first_neutral["court"] in BASELINE_CASE_COURTS
+            and first_neutral["year"] >= 2010
+        )
+        # This split prevents evaluation from treating HCA/FCA/older NSW cases
+        # as retrieval failures when their full text is intentionally absent.
+        if baseline_match:
+            baseline_status = "in_baseline"
+        elif first_neutral and baseline_candidate:
+            baseline_status = "eligible_but_not_indexed"
+        elif first_neutral:
+            baseline_status = "outside_baseline"
+        else:
+            baseline_status = "unclassified"
+
+        references.append(
+            {
+                "text": cited_case,
+                "medium_neutral_citations": neutral_citations,
+                "parsed_court": first_neutral["court"] if first_neutral else None,
+                "parsed_year": first_neutral["year"] if first_neutral else None,
+                "baseline_candidate": baseline_candidate,
+                "in_baseline": baseline_match is not None,
+                "baseline_status": baseline_status,
+                "matching_version_id": (
+                    baseline_match["version_id"] if baseline_match else None
+                ),
+                "matching_citation": (
+                    baseline_match["citation"] if baseline_match else None
+                ),
+                "full_text_available": baseline_match is not None,
+                "discussing_paragraph_numbers": find_case_discussion_paragraphs(
+                    cited_case, neutral_citations, paragraph_lookup
+                ),
+            }
+        )
+    return references
+
+
+# ---------------------------------------------------------------------------
+# Chunk construction
 
 
 def _split_at_boundary(text: str, limit: int) -> tuple[str, str]:
@@ -106,6 +269,7 @@ def split_text_bounded(
 
 
 def _fragment_paragraph(paragraph: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split one source paragraph while preserving its pinpoint identity."""
     number = paragraph["paragraph_number"]
     text = paragraph["text"]
     canonical_prefix = f"[{number}] "
@@ -160,6 +324,8 @@ def make_judgment_chunks(
         nonlocal current_units, current_length
         if not current_units:
             return
+        # ``paragraph_numbers`` preserves every source paragraph covered by the
+        # chunk, while start/end support simpler range-style displays.
         numbers = []
         for unit in current_units:
             if unit["paragraph_number"] not in numbers:
@@ -209,6 +375,10 @@ def make_judgment_chunks(
     return chunks
 
 
+# ---------------------------------------------------------------------------
+# Civil Liability Act reference extraction
+
+
 def _expand_section_range(
     start: str, end: str, section_order: list[str]
 ) -> list[str]:
@@ -250,6 +420,85 @@ def extract_section_references(
     return sorted(references, key=lambda section: order_lookup.get(section, 10**9))
 
 
+def _section_reference_names_non_target_act(text: str, match: re.Match[str]) -> bool:
+    """Return true when this local section citation is tied to another Act."""
+    suffix = text[match.end():match.end() + 180]
+    act_match = ACT_AFTER_SECTION_RE.match(suffix)
+    if not act_match:
+        return False
+    return not is_target_civil_liability_act(act_match.group("title"))
+
+
+def _section_reference_names_target_act(text: str, match: re.Match[str]) -> bool:
+    suffix = text[match.end():match.end() + 180]
+    act_match = ACT_AFTER_SECTION_RE.match(suffix)
+    return bool(act_match and is_target_civil_liability_act(act_match.group("title")))
+
+
+def _section_bases_from_match(match: re.Match[str]) -> set[str]:
+    bases = set()
+    for token in SECTION_TOKEN_RE.findall(match.group(1)):
+        base_match = re.match(r"\d+[A-Za-z]*", token)
+        if base_match:
+            bases.add(base_match.group(0).upper())
+    return bases
+
+
+def _previous_same_section_named_non_target(
+    text: str, match: re.Match[str], lookback: int = MAX_CHUNK_CHARS
+) -> bool:
+    """Carry forward local Act context for repeated references like ``s 69``."""
+    bases = _section_bases_from_match(match)
+    if not bases:
+        return False
+
+    start = max(0, match.start() - lookback)
+    prefix = text[start:match.start()]
+    for prior in SECTION_REFERENCE_RE.finditer(prefix):
+        if bases & _section_bases_from_match(prior):
+            if _section_reference_names_non_target_act(prefix, prior):
+                return True
+    return False
+
+
+def _section_reference_is_locally_non_target(
+    text: str, match: re.Match[str]
+) -> bool:
+    """Detect section mentions that should not be treated as CLA references."""
+    if _section_reference_names_non_target_act(text, match):
+        return True
+    if _section_reference_names_target_act(text, match):
+        return False
+
+    suffix = text[match.end():match.end() + 80]
+    uses_act_pronoun = bool(ACT_PRONOUN_AFTER_SECTION_RE.match(suffix))
+    if uses_act_pronoun and _previous_same_section_named_non_target(text, match):
+        return True
+
+    if _previous_same_section_named_non_target(text, match):
+        nearby = text[max(0, match.start() - 180):match.end() + 180]
+        return not TARGET_ACT_RE.search(nearby)
+    return False
+
+
+def extract_civil_liability_section_references(
+    text: str,
+    valid_sections: set[str],
+    section_order: list[str],
+) -> list[str]:
+    """Extract section references unless the local wording names another Act."""
+    references: set[str] = set()
+    for match in SECTION_REFERENCE_RE.finditer(text):
+        if _section_reference_is_locally_non_target(text, match):
+            continue
+        references.update(
+            extract_section_references(match.group(0), valid_sections, section_order)
+        )
+
+    order_lookup = {section: index for index, section in enumerate(section_order)}
+    return sorted(references, key=lambda section: order_lookup.get(section, 10**9))
+
+
 def extract_raw_section_references(text: str) -> list[str]:
     """Extract section identifiers from one legislation citation string."""
     references: list[str] = []
@@ -280,7 +529,7 @@ def build_legislation_references(
     valid_sections: set[str],
     section_order: list[str],
 ) -> list[dict[str, Any]]:
-    """Keep section references attached to the citation entry they came from."""
+    """Keep section references attached to the legislation entry they came from."""
     references = []
     for item in legislation_cited:
         is_target_act = is_target_civil_liability_act(item)
@@ -310,6 +559,7 @@ def extract_document_act_references(
     valid_sections: set[str],
     section_order: list[str],
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    """Summarise target Act references from the judgment header only."""
     sections: set[str] = set()
     parts: set[str] = set()
     legislation_references = build_legislation_references(
@@ -339,8 +589,12 @@ def extract_chunk_act_references(
     is listed for this Act in the judgment header. References close to an
     explicit mention of the Act are accepted even when the header is missing.
     """
+    # Start with document-level shorthand, then add local explicit CLA mentions.
+    # Each pass uses the same guard against "s 64 of the Civil Procedure Act".
     sections = set(
-        extract_section_references(text, set(document_sections), section_order)
+        extract_civil_liability_section_references(
+            text, set(document_sections), section_order
+        )
     )
     parts: set[str] = set()
 
@@ -367,7 +621,9 @@ def extract_chunk_act_references(
         end = min(possible_ends) if possible_ends else len(text)
         window = text[start:end]
         sections.update(
-            extract_section_references(window, valid_sections, section_order)
+            extract_civil_liability_section_references(
+                window, valid_sections, section_order
+            )
         )
         parts.update(PART_REFERENCE_RE.findall(window))
 
@@ -375,6 +631,10 @@ def extract_chunk_act_references(
         [section for section in section_order if section in sections],
         sorted(parts),
     )
+
+
+# ---------------------------------------------------------------------------
+# Legislation parsing and output
 
 
 def split_legislation_into_sections(text: str) -> list[dict[str, Any]]:
@@ -490,6 +750,7 @@ def make_legislation_chunks(provision: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def process_legislation() -> tuple[int, int, list[str]]:
+    """Write legislation chunks and return the ordered main-section list."""
     if not ACT_FILE.exists():
         raise FileNotFoundError(f"Civil Liability Act file not found: {ACT_FILE}")
 
@@ -533,6 +794,10 @@ def process_legislation() -> tuple[int, int, list[str]]:
     return len(provisions), total_chunks, main_sections
 
 
+# ---------------------------------------------------------------------------
+# Output validation and judgment processing
+
+
 def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
     """Check generated JSONL files for citation and chunking invariants."""
     required_files = [
@@ -555,7 +820,14 @@ def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
     seen_chunk_ids: set[str] = set()
     metadata_version_ids: set[str] = set()
     judgment_version_ids: set[str] = set()
+    matched_case_version_ids: set[str] = set()
     valid_sections = set(main_sections)
+    valid_case_statuses = {
+        "in_baseline",
+        "eligible_but_not_indexed",
+        "outside_baseline",
+        "unclassified",
+    }
     counts: Counter[str] = Counter()
 
     def add_error(message: str) -> None:
@@ -632,6 +904,36 @@ def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
                 add_error(
                     f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: Act sections do not match structured references"
                 )
+        cases_cited = record.get("cases_cited") or []
+        case_references = record.get("case_references")
+        if not isinstance(case_references, list):
+            add_error(
+                f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: missing case_references list"
+            )
+        else:
+            # Keep raw and structured case citations aligned so downstream
+            # evaluation can decide what was retrievable from this corpus.
+            if len(case_references) != len(cases_cited):
+                add_error(
+                    f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: case_references length does not match cases_cited"
+                )
+            for index, reference in enumerate(case_references, start=1):
+                if "text" not in reference:
+                    add_error(
+                        f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: case reference {index} missing text"
+                    )
+                if reference.get("baseline_status") not in valid_case_statuses:
+                    add_error(
+                        f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: case reference {index} has invalid baseline_status"
+                    )
+                if reference.get("in_baseline"):
+                    matching_version_id = reference.get("matching_version_id")
+                    if not matching_version_id:
+                        add_error(
+                            f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: in-baseline case reference {index} missing matching_version_id"
+                        )
+                    else:
+                        matched_case_version_ids.add(matching_version_id)
 
     for line_number, record in read_jsonl(OUTPUT_JUDGMENTS):
         counts["judgment_chunks"] += 1
@@ -704,6 +1006,11 @@ def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
         warnings.append(
             f"{len(metadata_without_chunks)} metadata record(s) have no chunks"
         )
+    missing_case_metadata = sorted(matched_case_version_ids - metadata_version_ids)
+    if missing_case_metadata:
+        add_error(
+            f"{len(missing_case_metadata)} in-baseline case reference(s) point outside metadata"
+        )
 
     return {
         "valid": not errors,
@@ -718,28 +1025,34 @@ def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
 def process_judgments(
     main_sections: list[str],
 ) -> tuple[int, int, dict[str, int]]:
+    """Write judgment metadata and paragraph-aware retrieval chunks."""
     total_documents = 0
     total_chunks = 0
     stats: Counter[str] = Counter()
     valid_sections = set(main_sections)
 
-    with (
-        JUDGMENTS_FILE.open("r", encoding="utf-8") as infile,
-        OUTPUT_JUDGMENTS.open("w", encoding="utf-8") as chunk_file,
-        OUTPUT_JUDGMENT_METADATA.open("w", encoding="utf-8") as metadata_file,
-    ):
+    with JUDGMENTS_FILE.open("r", encoding="utf-8") as infile:
+        docs = []
         for line_number, line in enumerate(infile, start=1):
             if not line.strip():
                 continue
             try:
-                doc = json.loads(line)
+                docs.append(json.loads(line))
             except json.JSONDecodeError as error:
                 raise ValueError(
                     f"Invalid JSON in {JUDGMENTS_FILE} line {line_number}"
                 ) from error
 
+    baseline_case_index = build_baseline_case_index(docs)
+
+    with (
+        OUTPUT_JUDGMENTS.open("w", encoding="utf-8") as chunk_file,
+        OUTPUT_JUDGMENT_METADATA.open("w", encoding="utf-8") as metadata_file,
+    ):
+        for doc in docs:
             total_documents += 1
             parsed = parse_judgment(doc.get("text") or "")
+            paragraph_lookup = build_paragraph_lookup(parsed["paragraphs"])
             header = parsed["header"]
             numbering = parsed["status"]
             stats[f"paragraph_numbering_{numbering}"] += 1
@@ -755,6 +1068,15 @@ def process_judgments(
             ) = extract_document_act_references(
                 header["legislation_cited"], valid_sections, main_sections
             )
+            # Raw header citations remain for compatibility; structured
+            # references drive retrieval evaluation and display decisions.
+            case_references = build_case_references(
+                header["cases_cited"], baseline_case_index, paragraph_lookup
+            )
+            stats["case_references_total"] += len(case_references)
+            for reference in case_references:
+                stats[f"case_references_{reference['baseline_status']}"] += 1
+
             metadata = {
                 "document_type": "judgment",
                 "version_id": doc.get("version_id"),
@@ -768,6 +1090,7 @@ def process_judgments(
                 "paragraph_marker_indent": parsed["marker_indent"],
                 "catchwords": header["catchwords"],
                 "cases_cited": header["cases_cited"],
+                "case_references": case_references,
                 "legislation_cited": header["legislation_cited"],
                 "legislation_references": legislation_references,
                 "civil_liability_act_sections": document_sections,
