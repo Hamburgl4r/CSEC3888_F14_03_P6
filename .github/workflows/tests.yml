@@ -2,7 +2,7 @@ name: CI/CD Auto Test
 
 on:
     push:
-    pull_requests:
+    pull_request:
 
 jobs:
     test:

@@ -1,8 +1,4 @@
-# =========================
-# Python
-# =========================
-
-# Byte-compiled / cache files
+# Python bytecode/cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,7 +7,6 @@ __pycache__/
 venv/
 .venv/
 env/
-.env/
 ENV/
 
 # Python packaging
@@ -20,27 +15,16 @@ dist/
 *.egg-info/
 .eggs/
 
-
-# =========================
-# Flask
-# =========================
-
-# Flask instance folder
+# Flask/local app state
 instance/
+.webassets-cache
 
-# Environment variables / secrets
+# Environment variables/secrets
 .env
 .env.*
 !.env.example
 
-# Flask cache
-.webassets-cache
-
-
-# =========================
-# Testing / Coverage
-# =========================
-
+# Testing/coverage
 .pytest_cache/
 .coverage
 .coverage.*
@@ -49,57 +33,31 @@ coverage.xml
 .tox/
 .nox/
 
-
-# =========================
-# Data
-# =========================
-
-# Raw/local datasets
+# Local corpus data
 data/raw/
+data/filtered/
+data/processed/
+*.jsonl
 
-# Uncomment if processed data should also not be tracked
-# data/processed/
-
-# Common database files
+# Databases
 *.db
 *.sqlite
 *.sqlite3
 
-
-# =========================
-# IDE / Editor
-# =========================
-
-# VS Code
+# IDE/editor files
 .vscode/
-
-# PyCharm / IntelliJ
 .idea/
-
-# Vim
 *.swp
 *.swo
 
-
-# =========================
-# Operating System
-# =========================
-
-# macOS
+# Operating system files
 .DS_Store
-
-# Windows
 Thumbs.db
 Desktop.ini
 
-
-# =========================
-# Logs / Temporary Files
-# =========================
-
+# Logs/temp files
 *.log
 *.tmp
 *.temp
-
 tmp/
 temp/
