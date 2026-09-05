@@ -6,6 +6,7 @@ The plain-text corpus contains four paragraph-marker styles:
 * ``  1 Text`` (older judgments)
 * ``[1] Text`` (a small number of judgments)
 * ``1Text`` (2011-2014 judgments, where extraction dropped the separator)
+* ``1 Text`` and ``1.Text`` (legacy judgments with no marker indentation)
 
 The HTML-to-text conversion also loses the ``start`` value of some ordered
 lists.  In those documents the visible marker restarts at 1 after a heading,
@@ -47,13 +48,21 @@ LABEL_ALIASES = {
 HEADER_LABEL_RE = re.compile(
     r"^\s*([A-Za-z][A-Za-z0-9 ()/'&.-]{1,60}):\s*(.*)$"
 )
+BODY_HEADING_RE = re.compile(
+    r"^[ \t]*(?:JUDGMENT|JUDGMENTS|REASONS FOR JUDGMENT|REASONS FOR DECISION)[ \t]*$",
+    re.I | re.M,
+)
 
 MARKER_PATTERNS = {
     "bracket": re.compile(r"^([ \t]*)\[(\d{1,4})\][ \t]+"),
     "dot": re.compile(r"^([ \t]*)(\d{1,4})\.[ \t]+"),
+    "dot_glued": re.compile(r"^()(\d{1,4})\.(?=[A-Z])"),
     # Requiring indentation prevents years and ordinary sentence text from
     # being mistaken for the older ``  1 Text`` paragraph style.
     "plain": re.compile(r"^([ \t]+)(\d{1,4})[ \t]+"),
+    # Some legacy NSW exports use unindented plain markers. Restricting the
+    # following character to uppercase keeps ordinary numeric lists out.
+    "plain_unindented": re.compile(r"^()(\d{1,4})[ \t]+(?=[A-Z])"),
     # ``8The respondent said`` - the separator between the paragraph number
     # and the text was lost when the corpus was extracted from HTML.
     "glued": re.compile(r"^()(\d{1,4})(?=[A-Z])"),
@@ -123,16 +132,92 @@ def _sequence_quality(numbers: list[int]) -> float:
     return valid_steps / (len(numbers) - 1)
 
 
+def _trim_before_body_heading(
+    markers: list[dict[str, Any]], text: str
+) -> list[dict[str, Any]]:
+    """Discard header/table markers when a real body sequence follows."""
+    if not markers:
+        return markers
+
+    heading_ends = []
+    for match in BODY_HEADING_RE.finditer(text):
+        markers_before_heading = sum(
+            marker["start"] < match.start() for marker in markers
+        )
+        if markers_before_heading <= 1 and match.start() < markers[-1]["start"]:
+            heading_ends.append(match.end())
+    if not heading_ends:
+        return markers
+
+    for heading_end in reversed(heading_ends):
+        after_heading = [
+            marker for marker in markers if marker["start"] >= heading_end
+        ]
+        if len(after_heading) < 3:
+            continue
+        numbers = [marker["number"] for marker in after_heading]
+        if numbers[0] <= 3 and _sequence_quality(numbers) >= 0.55:
+            return after_heading
+
+    return markers
+
+
+def _select_cross_indent_sequence(
+    candidates: list[dict[str, Any]], text: str
+) -> list[dict[str, Any]]:
+    """Recover legacy judgments whose body markers change indentation."""
+    body_heading = None
+    for match in BODY_HEADING_RE.finditer(text):
+        body_heading = match.end()
+        break
+
+    text_length = len(text)
+    allowed_styles = {"plain", "plain_unindented", "dot", "dot_glued", "glued"}
+    body_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["style"] in allowed_styles
+        and (body_heading is None or candidate["start"] >= body_heading)
+    ]
+
+    best: list[dict[str, Any]] = []
+    for start_index, start in enumerate(body_candidates):
+        if start["number"] > 3:
+            continue
+        if start["start"] / max(1, text_length) > MAX_BODY_START_FRACTION:
+            continue
+        sequence = [start]
+        expected = start["number"] + 1
+        for candidate in body_candidates[start_index + 1:]:
+            if candidate["number"] == expected:
+                sequence.append(candidate)
+                expected += 1
+        if len(sequence) > len(best):
+            best = sequence
+
+    if len(best) < 10:
+        return []
+    return best
+
+
 def _select_marker_group(
     candidates: list[dict[str, Any]],
-    text_length: int,
+    text: str,
 ) -> list[dict[str, Any]]:
+    text_length = len(text)
     groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for candidate in candidates:
         groups[(candidate["style"], candidate["indent"])].append(candidate)
 
     ranked: list[tuple[float, list[dict[str, Any]]]] = []
-    style_bonus = {"dot": 1.08, "plain": 1.04, "glued": 1.04, "bracket": 1.0}
+    style_bonus = {
+        "dot": 1.08,
+        "plain": 1.04,
+        "glued": 1.04,
+        "bracket": 1.0,
+        "dot_glued": 1.02,
+        "plain_unindented": 0.98,
+    }
 
     for (style, indent), group in groups.items():
         numbers = [item["number"] for item in group]
@@ -187,7 +272,16 @@ def _select_marker_group(
     )
     if first_start > len(selected) // 4:
         first_start = 0
-    return selected[first_start:]
+    selected = _trim_before_body_heading(selected[first_start:], text)
+
+    cross_indent = _select_cross_indent_sequence(candidates, text)
+    if (
+        len(cross_indent) > len(selected)
+        and cross_indent[0]["start"] <= selected[0]["start"]
+    ):
+        return cross_indent
+
+    return selected
 
 
 def parse_paragraphs(text: str) -> dict[str, Any]:
@@ -201,7 +295,7 @@ def parse_paragraphs(text: str) -> dict[str, Any]:
             "marker_indent": None,
         }
 
-    markers = _select_marker_group(_marker_candidates(text), len(text))
+    markers = _select_marker_group(_marker_candidates(text), text)
     if not markers:
         return {
             "paragraphs": [],

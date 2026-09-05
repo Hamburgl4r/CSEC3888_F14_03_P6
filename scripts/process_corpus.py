@@ -31,18 +31,31 @@ OUTPUT_LEGISLATION = OUTPUT_DIR / "legislation_chunks.jsonl"
 OUTPUT_REPORT = OUTPUT_DIR / "processing_report.json"
 
 MAX_CHUNK_CHARS = 3000
-ACT_NAME_RE = re.compile(r"\bCivil\s+Liability\s+Act(?:\s+2002)?\b", re.I)
+TARGET_ACT_RE = re.compile(
+    r"\bCivil\s+Liability\s+Act\b\s*(?:,\s*)?"
+    r"(?:(?:\(\s*NSW\s*\)\s*)?(?:2002|\(\s*2002\s*\))|"
+    r"(?:2002|\(\s*2002\s*\))\s*(?:\(\s*NSW\s*\))?)",
+    re.I,
+)
+ACT_JURISDICTION_RE = re.compile(r"^\s*\(([^)]+)\)")
 SECTION_REFERENCE_RE = re.compile(
     # ``s 5D``, ``ss 5B-5D`` and the unspaced ``s5D`` all occur.
     r"\b(?:ss?|sections?)\s*"
     r"(\d+[A-Za-z]*(?:\([^)\s]+\))*"
-    r"(?:\s*(?:,|and|to|[-–—])\s*"
+    r"(?:\s*(?:,|and|to|[-\u2013\u2014])\s*"
     r"\d+[A-Za-z]*(?:\([^)\s]+\))*)*)",
     re.I,
 )
 PART_REFERENCE_RE = re.compile(r"\b(?:Pt|Part)\s+(\d+[A-Za-z]*)\b", re.I)
 # A subsection number in ``5D(1)(a)`` is not another section reference.
 SECTION_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9(])\d+[A-Za-z]*")
+RAW_SECTION_REFERENCE_RE = re.compile(
+    r"\b(?:ss?|sections?)\s*"
+    r"(\d+[A-Za-z]*(?:\([^)\s]+\))*"
+    r"(?:\s*(?:,|and|to|[-\u2013\u2014])\s*"
+    r"\d+[A-Za-z]*(?:\([^)\s]+\))*)*)",
+    re.I,
+)
 
 
 def clean_text(text: str) -> str:
@@ -223,7 +236,7 @@ def extract_section_references(
         if not tokens:
             continue
 
-        is_range = bool(re.search(r"\bto\b|[-–—]", expression, re.I))
+        is_range = bool(re.search(r"\bto\b|[-\u2013\u2014]", expression, re.I))
         if is_range and len(tokens) >= 2:
             expanded = _expand_section_range(tokens[0], tokens[-1], section_order)
             tokens = expanded + tokens[1:-1]
@@ -237,21 +250,80 @@ def extract_section_references(
     return sorted(references, key=lambda section: order_lookup.get(section, 10**9))
 
 
+def extract_raw_section_references(text: str) -> list[str]:
+    """Extract section identifiers from one legislation citation string."""
+    references: list[str] = []
+    for match in RAW_SECTION_REFERENCE_RE.finditer(text):
+        for token in SECTION_TOKEN_RE.findall(match.group(1)):
+            base_match = re.match(r"\d+[A-Za-z]*", token)
+            if not base_match:
+                continue
+            base = base_match.group(0)
+            if base not in references:
+                references.append(base)
+    return references
+
+
+def is_target_civil_liability_act(text: str) -> bool:
+    """Return true for the NSW Civil Liability Act 2002 citation entry."""
+    for match in TARGET_ACT_RE.finditer(text):
+        suffix = text[match.end():match.end() + 40]
+        jurisdiction = ACT_JURISDICTION_RE.match(suffix)
+        if jurisdiction and jurisdiction.group(1).strip().upper() != "NSW":
+            continue
+        return True
+    return False
+
+
+def build_legislation_references(
+    legislation_cited: list[str],
+    valid_sections: set[str],
+    section_order: list[str],
+) -> list[dict[str, Any]]:
+    """Keep section references attached to the citation entry they came from."""
+    references = []
+    for item in legislation_cited:
+        is_target_act = is_target_civil_liability_act(item)
+        references.append(
+            {
+                "text": item,
+                "section_references": extract_raw_section_references(item),
+                "part_references": sorted(set(PART_REFERENCE_RE.findall(item))),
+                "is_civil_liability_act_2002_nsw": is_target_act,
+                "civil_liability_act_sections": (
+                    extract_section_references(item, valid_sections, section_order)
+                    if is_target_act
+                    else []
+                ),
+                "civil_liability_act_parts": (
+                    sorted(set(PART_REFERENCE_RE.findall(item)))
+                    if is_target_act
+                    else []
+                ),
+            }
+        )
+    return references
+
+
 def extract_document_act_references(
     legislation_cited: list[str],
     valid_sections: set[str],
     section_order: list[str],
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     sections: set[str] = set()
     parts: set[str] = set()
-    for item in legislation_cited:
-        if not ACT_NAME_RE.search(item):
+    legislation_references = build_legislation_references(
+        legislation_cited, valid_sections, section_order
+    )
+    for item in legislation_references:
+        if not item["is_civil_liability_act_2002_nsw"]:
             continue
-        sections.update(extract_section_references(item, valid_sections, section_order))
-        parts.update(PART_REFERENCE_RE.findall(item))
+        sections.update(item["civil_liability_act_sections"])
+        parts.update(item["civil_liability_act_parts"])
     return (
         [section for section in section_order if section in sections],
         sorted(parts),
+        legislation_references,
     )
 
 
@@ -272,7 +344,11 @@ def extract_chunk_act_references(
     )
     parts: set[str] = set()
 
-    for act_match in ACT_NAME_RE.finditer(text):
+    for act_match in TARGET_ACT_RE.finditer(text):
+        suffix = text[act_match.end():act_match.end() + 40]
+        jurisdiction = ACT_JURISDICTION_RE.match(suffix)
+        if jurisdiction and jurisdiction.group(1).strip().upper() != "NSW":
+            continue
         start = max(
             0,
             text.rfind("\n", 0, act_match.start()),
@@ -394,7 +470,26 @@ def split_legislation_into_sections(text: str) -> list[dict[str, Any]]:
     return provisions
 
 
-def process_legislation() -> tuple[int, list[str]]:
+def make_legislation_chunks(provision: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split one provision into bounded retrieval chunks."""
+    pieces = split_text_bounded(provision["text"])
+    if not pieces:
+        return []
+    return [
+        {
+            **provision,
+            "text": piece,
+            "provision_fragment": (
+                {"index": index, "count": len(pieces)}
+                if len(pieces) > 1
+                else None
+            ),
+        }
+        for index, piece in enumerate(pieces, start=1)
+    ]
+
+
+def process_legislation() -> tuple[int, int, list[str]]:
     if not ACT_FILE.exists():
         raise FileNotFoundError(f"Civil Liability Act file not found: {ACT_FILE}")
 
@@ -408,23 +503,216 @@ def process_legislation() -> tuple[int, list[str]]:
         if provision["provision_type"] == "section"
     ]
 
+    total_chunks = 0
     with OUTPUT_LEGISLATION.open("w", encoding="utf-8") as outfile:
         for provision in provisions:
-            output = {
-                "chunk_id": (
+            chunks = make_legislation_chunks(provision)
+            for index, chunk in enumerate(chunks, start=1):
+                chunk_id = (
                     f"{doc.get('version_id', 'civil_liability_act')}_"
                     f"{provision['provision_id']}"
-                ),
-                "document_type": "legislation",
-                "version_id": doc.get("version_id"),
-                "citation": doc.get("citation"),
-                "date": doc.get("date"),
-                "url": doc.get("url"),
-                **provision,
-            }
-            outfile.write(json.dumps(output, ensure_ascii=False) + "\n")
+                )
+                if len(chunks) > 1:
+                    chunk_id = f"{chunk_id}_fragment_{index}"
+                output = {
+                    "chunk_id": chunk_id,
+                    "document_type": "legislation",
+                    "version_id": doc.get("version_id"),
+                    "citation": doc.get("citation"),
+                    "date": doc.get("date"),
+                    "url": doc.get("url"),
+                    **chunk,
+                }
+                if len(output["text"]) > MAX_CHUNK_CHARS:
+                    raise AssertionError(
+                        f"Legislation chunk exceeds limit: {output['chunk_id']}"
+                    )
+                outfile.write(json.dumps(output, ensure_ascii=False) + "\n")
+                total_chunks += 1
 
-    return len(provisions), main_sections
+    return len(provisions), total_chunks, main_sections
+
+
+def validate_processed_outputs(main_sections: list[str]) -> dict[str, Any]:
+    """Check generated JSONL files for citation and chunking invariants."""
+    required_files = [
+        OUTPUT_JUDGMENTS,
+        OUTPUT_JUDGMENT_METADATA,
+        OUTPUT_LEGISLATION,
+    ]
+    missing_files = [str(path) for path in required_files if not path.exists()]
+    if missing_files:
+        return {
+            "valid": False,
+            "errors": [f"Missing output file: {path}" for path in missing_files],
+            "error_count": len(missing_files),
+            "warnings": [],
+            "warning_count": 0,
+        }
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    seen_chunk_ids: set[str] = set()
+    metadata_version_ids: set[str] = set()
+    judgment_version_ids: set[str] = set()
+    valid_sections = set(main_sections)
+    counts: Counter[str] = Counter()
+
+    def add_error(message: str) -> None:
+        errors.append(message)
+
+    def read_jsonl(path: Path):
+        with path.open("r", encoding="utf-8") as infile:
+            for line_number, line in enumerate(infile, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    yield line_number, json.loads(line)
+                except json.JSONDecodeError as error:
+                    add_error(f"{path} line {line_number}: invalid JSON ({error})")
+
+    for line_number, record in read_jsonl(OUTPUT_LEGISLATION):
+        counts["legislation_chunks"] += 1
+        chunk_id = record.get("chunk_id")
+        if not chunk_id:
+            add_error(f"{OUTPUT_LEGISLATION} line {line_number}: missing chunk_id")
+        elif chunk_id in seen_chunk_ids:
+            add_error(
+                f"{OUTPUT_LEGISLATION} line {line_number}: duplicate chunk_id {chunk_id}"
+            )
+        else:
+            seen_chunk_ids.add(chunk_id)
+        if record.get("document_type") != "legislation":
+            add_error(f"{OUTPUT_LEGISLATION} line {line_number}: wrong document_type")
+        if len(record.get("text") or "") > MAX_CHUNK_CHARS:
+            add_error(
+                f"{OUTPUT_LEGISLATION} line {line_number}: text exceeds {MAX_CHUNK_CHARS} chars"
+            )
+        if record.get("provision_type") == "section":
+            section = record.get("section")
+            if section not in valid_sections:
+                add_error(
+                    f"{OUTPUT_LEGISLATION} line {line_number}: unknown section {section}"
+                )
+
+    for line_number, record in read_jsonl(OUTPUT_JUDGMENT_METADATA):
+        counts["judgment_metadata"] += 1
+        version_id = record.get("version_id")
+        if not version_id:
+            add_error(f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: missing version_id")
+        elif version_id in metadata_version_ids:
+            add_error(
+                f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: duplicate metadata version_id {version_id}"
+            )
+        else:
+            metadata_version_ids.add(version_id)
+        sections = set(record.get("civil_liability_act_sections") or [])
+        unknown_sections = sorted(sections - valid_sections)
+        if unknown_sections:
+            add_error(
+                f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: unknown Act sections {unknown_sections}"
+            )
+        legislation_references = record.get("legislation_references")
+        if not isinstance(legislation_references, list):
+            add_error(
+                f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: missing legislation_references list"
+            )
+        else:
+            target_sections = set()
+            for index, reference in enumerate(legislation_references, start=1):
+                if "text" not in reference:
+                    add_error(
+                        f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: legislation reference {index} missing text"
+                    )
+                if reference.get("is_civil_liability_act_2002_nsw"):
+                    target_sections.update(
+                        reference.get("civil_liability_act_sections") or []
+                    )
+            if target_sections != sections:
+                add_error(
+                    f"{OUTPUT_JUDGMENT_METADATA} line {line_number}: Act sections do not match structured references"
+                )
+
+    for line_number, record in read_jsonl(OUTPUT_JUDGMENTS):
+        counts["judgment_chunks"] += 1
+        chunk_id = record.get("chunk_id")
+        if not chunk_id:
+            add_error(f"{OUTPUT_JUDGMENTS} line {line_number}: missing chunk_id")
+        elif chunk_id in seen_chunk_ids:
+            add_error(
+                f"{OUTPUT_JUDGMENTS} line {line_number}: duplicate chunk_id {chunk_id}"
+            )
+        else:
+            seen_chunk_ids.add(chunk_id)
+
+        version_id = record.get("version_id")
+        if version_id:
+            judgment_version_ids.add(version_id)
+        else:
+            add_error(f"{OUTPUT_JUDGMENTS} line {line_number}: missing version_id")
+
+        if record.get("document_type") != "judgment":
+            add_error(f"{OUTPUT_JUDGMENTS} line {line_number}: wrong document_type")
+        if len(record.get("text") or "") > MAX_CHUNK_CHARS:
+            add_error(
+                f"{OUTPUT_JUDGMENTS} line {line_number}: text exceeds {MAX_CHUNK_CHARS} chars"
+            )
+
+        paragraph_numbers = record.get("paragraph_numbers") or []
+        if record.get("citation_available"):
+            if not paragraph_numbers:
+                add_error(
+                    f"{OUTPUT_JUDGMENTS} line {line_number}: citation_available without paragraph_numbers"
+                )
+            elif record.get("paragraph_start") != paragraph_numbers[0]:
+                add_error(
+                    f"{OUTPUT_JUDGMENTS} line {line_number}: paragraph_start does not match first paragraph"
+                )
+            elif record.get("paragraph_end") != paragraph_numbers[-1]:
+                add_error(
+                    f"{OUTPUT_JUDGMENTS} line {line_number}: paragraph_end does not match last paragraph"
+                )
+        elif (
+            record.get("paragraph_start") is not None
+            or record.get("paragraph_end") is not None
+            or paragraph_numbers
+        ):
+            add_error(
+                f"{OUTPUT_JUDGMENTS} line {line_number}: unavailable citation has paragraph target data"
+            )
+
+        chunk_sections = set(record.get("legislation_sections") or [])
+        document_sections = set(record.get("document_legislation_sections") or [])
+        unknown_chunk_sections = sorted(chunk_sections - valid_sections)
+        unknown_document_sections = sorted(document_sections - valid_sections)
+        if unknown_chunk_sections:
+            add_error(
+                f"{OUTPUT_JUDGMENTS} line {line_number}: unknown chunk Act sections {unknown_chunk_sections}"
+            )
+        if unknown_document_sections:
+            add_error(
+                f"{OUTPUT_JUDGMENTS} line {line_number}: unknown document Act sections {unknown_document_sections}"
+            )
+
+    missing_metadata = sorted(judgment_version_ids - metadata_version_ids)
+    metadata_without_chunks = sorted(metadata_version_ids - judgment_version_ids)
+    if missing_metadata:
+        warnings.append(
+            f"{len(missing_metadata)} judgment version_id(s) have chunks but no metadata"
+        )
+    if metadata_without_chunks:
+        warnings.append(
+            f"{len(metadata_without_chunks)} metadata record(s) have no chunks"
+        )
+
+    return {
+        "valid": not errors,
+        "errors": errors[:50],
+        "error_count": len(errors),
+        "warnings": warnings[:50],
+        "warning_count": len(warnings),
+        **counts,
+    }
 
 
 def process_judgments(
@@ -460,7 +748,11 @@ def process_judgments(
             if header["legislation_cited"]:
                 stats["documents_with_legislation_cited"] += 1
 
-            document_sections, document_parts = extract_document_act_references(
+            (
+                document_sections,
+                document_parts,
+                legislation_references,
+            ) = extract_document_act_references(
                 header["legislation_cited"], valid_sections, main_sections
             )
             metadata = {
@@ -477,6 +769,7 @@ def process_judgments(
                 "catchwords": header["catchwords"],
                 "cases_cited": header["cases_cited"],
                 "legislation_cited": header["legislation_cited"],
+                "legislation_references": legislation_references,
                 "civil_liability_act_sections": document_sections,
                 "civil_liability_act_parts": document_parts,
                 "header": header,
@@ -525,19 +818,24 @@ def process_judgments(
 
 def main() -> None:
     print("Processing Civil Liability Act...")
-    legislation_provisions, main_sections = process_legislation()
+    legislation_provisions, legislation_chunks, main_sections = process_legislation()
 
     print("Processing judgments...")
     judgment_documents, judgment_chunks, judgment_stats = process_judgments(
         main_sections
     )
 
+    print("Validating processed outputs...")
+    validation = validate_processed_outputs(main_sections)
+
     report = {
         "judgments_processed": judgment_documents,
         "judgment_chunks_created": judgment_chunks,
         "legislation_provisions_created": legislation_provisions,
+        "legislation_chunks_created": legislation_chunks,
         "legislation_main_sections_created": len(main_sections),
         "max_chunk_characters": MAX_CHUNK_CHARS,
+        "validation": validation,
         **judgment_stats,
     }
     with OUTPUT_REPORT.open("w", encoding="utf-8") as report_file:
@@ -546,6 +844,10 @@ def main() -> None:
     print("\nProcessing finished")
     for key, value in report.items():
         print(f"{key}: {value}")
+    if not validation["valid"]:
+        raise AssertionError(
+            f"Processed output validation failed with {validation['error_count']} errors"
+        )
     print("\nOutput files:")
     print(OUTPUT_JUDGMENTS)
     print(OUTPUT_JUDGMENT_METADATA)
