@@ -16,7 +16,7 @@ texts = [
     "Negligence requires consideration of foreseeable risk.",
 ]
 
-class TestEncoder:
+class SimpleEncoder:
     def __init__(self):
         self.last_input = None
         self.last_normalize = None
@@ -44,10 +44,10 @@ class TestEncoder:
 
 def test_load_default_encoder():
     with patch("retrieval.embed.SentenceTransformer") as mock_transformer:
-        test_encoder = object()
-        mock_transformer.return_value = test_encoder
+        simple_encoder = object()
+        mock_transformer.return_value = simple_encoder
 
         encoder = load_encoder()
 
         mock_transformer.assert_called_once_with(DEFAULT_MODEL_NAME)
-        assert encoder is test_encoder
+        assert encoder is simple_encoder
