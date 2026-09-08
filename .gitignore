@@ -37,6 +37,7 @@ coverage.xml
 data/raw/
 data/filtered/
 data/processed/
+data/indexes
 *.jsonl
 
 # Databases
