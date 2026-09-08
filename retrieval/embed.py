@@ -14,6 +14,7 @@ Install later: sentence-transformers
 """
 
 from __future__ import annotations
+from sentence_transformers import SentenceTransformer
 
 # Default for the client demo. Swap the string if the team later tries large.
 DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
