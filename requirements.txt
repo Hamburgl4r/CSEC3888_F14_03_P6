@@ -1,4 +1,5 @@
 pytest==9.1.1
 rank-bm25
 sentence-transformers
-numpy
+numpy===2.5.3
+faiss-cpu===1.15.0
