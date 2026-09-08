@@ -41,4 +41,10 @@ def embed_passages(texts: list[str], encoder) -> list:
 
 def embed_query(text: str, encoder):
     """Embed a user query. Add the BGE query prefix before encoding."""
-    raise NotImplementedError
+    query = BGE_QUERY_PREFIX + text
+    
+    embedding = encoder.encode(
+        query,
+        normalize_embeddings=True,
+    )
+    return embedding
