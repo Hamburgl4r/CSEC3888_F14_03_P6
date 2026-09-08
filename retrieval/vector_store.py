@@ -14,13 +14,21 @@ import faiss
 import numpy as np
 import json
 
+from typing import TypedDict
 from __future__ import annotations
 from pathlib import Path
 
+# Setup 
 INDEX_DIR = Path("data/indexes")
 
+class VectorIndex(TypedDict):
+    faiss: faiss.Index
+    chunk_ids: list[str]
+
+
+
 ## Functions
-def build_index(embeddings, chunk_ids: list[str]) -> dict: 
+def build_index(embeddings, chunk_ids: list[str]) -> VectorIndex: 
     """Create a FAISS index from passage embedings.
 
     ``chunk_ids`` must stay in the same order as ``embeddings``.
@@ -73,7 +81,7 @@ def save_index(index, path: Path = INDEX_DIR / "vectors") -> None:
 
 
 
-def load_index(path: Path = INDEX_DIR / "vectors"):
+def load_index(path: Path = INDEX_DIR / "vectors") -> VectorIndex:
     """Load a previously saved index."""
     path = Path(path)
 
@@ -87,13 +95,51 @@ def load_index(path: Path = INDEX_DIR / "vectors"):
 
     with open(ids_path, "r", encoding="utf-8") as f:
         chunk_ids = json.load(f)
-    
+
     return {
         "faiss": faiss_index,
         "chunk_ids": chunk_ids,
     }
 
 
-def search_vectors(index, query_embedding, top_k: int = 20) -> list[tuple[str, float]]:
+def search_vectors(index: VectorIndex, 
+                   query_embedding: list[float] | np.ndarray, 
+                   top_k: int = 20
+                   ) -> list[tuple[str, float]]:
     """Return ``(chunk_id, score)`` pairs for the nearest vectors."""
-    raise NotImplementedError
+
+    if top_k <= 0: return []
+
+    if len(index["chunk_ids"]) == 0: return []
+
+    # convert embeddings into FAISS safe format
+    query_vector = np.asarray(
+        query_embedding,
+        dtype=np.float32,
+    ).reshape(1, -1)
+
+    if query_vector.shape[1] != index["faiss"].d:
+        raise ValueError (
+            "query embedding dimmension does not math FAISS index"
+        )
+
+    k = min(top_k, len(index["chunk_ids"]))
+
+    # perform vector similarity search
+    scores, positions = index["faiss"].search(
+        query_vector,
+        k,
+    )
+    results: list[tuple[str, float]] = []
+
+    # map the FAISS positions into respective chunks
+    for position, score in zip(positions[0], scores[0]):
+        if position == -1: continue
+
+        chunk_id = index["chunk_ids"][position]
+
+        results.append(
+            (chunk_id, float(score))
+        )
+
+    return results
