@@ -26,7 +26,8 @@ def load_encoder(model_name: str = DEFAULT_MODEL_NAME):
 
     Keep the returned object in memory. Do not reload the model on every query.
     """
-    raise NotImplementedError
+    encoder = SentenceTransformer(model_name)
+    return encoder
 
 
 def embed_passages(texts: list[str], encoder) -> list:
