@@ -32,11 +32,11 @@ def load_encoder(model_name: str = DEFAULT_MODEL_NAME):
 
 def embed_passages(texts: list[str], encoder) -> list:
     """Embed chunk text. Do not add the BGE query prefix here."""
-    embeddings = encoder.encode (
+    embeddings = encoder.encode(
         texts, 
         normalize_embeddings=True, # scales output vectors to unit length 1, allow fast comparison
     )
-    return embeddings
+    return embeddings.tolist()
 
 
 def embed_query(text: str, encoder):
