@@ -15,7 +15,6 @@ import numpy as np
 import json
 
 from typing import TypedDict
-from __future__ import annotations
 from pathlib import Path
 
 # Setup 
@@ -69,12 +68,12 @@ def save_index(index, path: Path = INDEX_DIR / "vectors") -> None:
 
     # save index
     faiss.write_index(
-        index[faiss],
+        index["faiss"],
         str(path.with_suffix(".faiss"))
     )
 
     # save chunk id mappings
-    ids_path = path.with_name(path.name, + "_ids.json")
+    ids_path = path.with_name(path.name + "_ids.json")
 
     with open(ids_path, "w", encoding="utf-8") as f:
         json.dump(index["chunk_ids"], f)
