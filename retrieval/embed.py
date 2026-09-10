@@ -35,7 +35,6 @@ def embed_passages(texts: list[str], encoder) -> list:
     embeddings = encoder.encode(
         texts, 
         normalize_embeddings=True, # scales output vectors to unit length 1, allow fast comparison
-        show_progress_bar=True
     )
     return embeddings.tolist()
 
