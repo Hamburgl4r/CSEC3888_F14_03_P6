@@ -22,11 +22,11 @@ from functools import lru_cache
 
 import json
 
-from bm25 import build_index as build_bm25_index
-from bm25 import search_bm25
-from embed import embed_query, load_encoder
-from vector_store import load_index as load_vector_index
-from vector_store import search_vectors
+from retrieval.bm25 import build_index as build_bm25_index
+from retrieval.bm25 import search_bm25
+from retrieval.embed import embed_query, load_encoder
+from retrieval.vector_store import load_index as load_vector_index
+from retrieval.vector_store import search_vectors
 
 JUDGMENT_CHUNKS = Path("data/processed/judgment_chunks.jsonl")
 LEGISLATION_CHUNKS = Path("data/processed/legislation_chunks.jsonl")
@@ -114,8 +114,15 @@ def reciprocal_rank_fusion(
                 + 1.0 / (k + rank)
             )
 
+    maximum_score = 2 / (k + 1)
+
+    normalised_scores = [
+        (chunk_id, min(score / maximum_score, 1.0))
+        for chunk_id, score in fused_scores.items()
+    ]
+
     return sorted(
-        fused_scores.items(),
+        normalised_scores,
         key=lambda hit: hit[1],
         reverse=True,
     )
