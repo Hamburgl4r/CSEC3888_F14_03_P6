@@ -11,73 +11,11 @@ completed. Turn it off when ``retrieval.retrieve.search`` is ready.
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 
 import streamlit as st
-
-
-DEMO_RESULTS: list[dict[str, Any]] = [
-    {
-        "chunk_id": "nsw_legislation:2022-06-16/act-2002-022_s_5D",
-        "document_type": "legislation",
-        "citation": "Civil Liability Act 2002 (NSW)",
-        "date": "2022-06-16",
-        "url": (
-            "https://legislation.nsw.gov.au/view/whole/html/inforce/"
-            "2022-06-16/act-2002-022"
-        ),
-        "provision_id": "s_5D",
-        "provision": "s 5D",
-        "heading": "General principles",
-        "part_heading": "Part 1A Negligence",
-        "division_heading": "Division 3 Causation",
-        "text": (
-            "5D General principles\n\n"
-            "(1) A determination that negligence caused particular harm "
-            "comprises the following elements:\n\n"
-            "(a) that the negligence was a necessary condition of the "
-            "occurrence of the harm (factual causation), and\n\n"
-            "(b) that it is appropriate for the scope of the negligent "
-            "person's liability to extend to the harm so caused "
-            "(scope of liability)."
-        ),
-        "match_label": "Matched by keyword and meaning",
-        "score": 0.94,
-    },
-    {
-        "chunk_id": "nsw_caselaw:549f69543004262463a4a639_chunk_1",
-        "document_type": "judgment",
-        "citation": "Mudford v Great Lakes Council [2010] NSWDC 109",
-        "court": "NSWDC",
-        "date": "2010-06-17",
-        "url": (
-            "https://www.caselaw.nsw.gov.au/decision/"
-            "549f69543004262463a4a639"
-        ),
-        "catchwords": (
-            "Contributory negligence; slip and fall; adequacy of access; "
-            "warning of danger"
-        ),
-        "paragraph_start": 1,
-        "paragraph_end": 3,
-        "paragraph_numbers": [1, 2, 3],
-        "citation_available": True,
-        "legislation_sections": [],
-        "text": (
-            "[1] Graeme Mudford slipped on a grassed bank in the Forster "
-            "Beach Caravan Park on 29 October 2005. He suffered a serious "
-            "fracture to his right leg in the fall.\n\n"
-            "[2] The plaintiff claimed that the defendant breached its duty "
-            "of care. The defendant denied negligence and claimed "
-            "contributory negligence.\n\n"
-            "[3] The issues included whether adequate provision was made for "
-            "pedestrian movement and whether a warning or barrier was needed."
-        ),
-        "match_label": "Matched by meaning",
-        "score": 0.88,
-    },
-]
 
 
 def add_page_styles() -> None:
@@ -323,6 +261,17 @@ def add_page_styles() -> None:
             padding: 1.2rem 1.35rem;
         }
 
+        .passage-label {
+            border-bottom: 1px solid #98a4a8;
+            color: var(--navy);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            margin: 1rem 0 0;
+            padding: 0 0 0.55rem;
+            text-transform: uppercase;
+        }
+
         div[data-testid="stForm"] {
             background: var(--surface);
             border: 2px solid var(--navy);
@@ -555,61 +504,31 @@ def render_source_text(text: str) -> None:
     )
 
 
-def demo_search(
-    *,
-    court: str | None,
-    date_from: date,
-    date_to: date,
-    provision: str | None,
-) -> list[dict[str, Any]]:
-    """Filter the sample records so the prototype controls can be tested."""
-    results: list[dict[str, Any]] = []
-    normalised_provision = (provision or "").lower().replace(" ", "")
-
-    for item in DEMO_RESULTS:
-        item_date = date.fromisoformat(item["date"])
-        if item_date < date_from or item_date > date_to:
-            continue
-        if court and item["document_type"] == "judgment":
-            if item.get("court") != court:
-                continue
-        if normalised_provision:
-            searchable = " ".join(
-                [
-                    item.get("provision", ""),
-                    item.get("provision_id", ""),
-                    " ".join(item.get("legislation_sections", [])),
-                    item.get("text", ""),
-                ]
-            ).lower().replace(" ", "")
-            if normalised_provision not in searchable:
-                continue
-        results.append(item)
-
-    return results
+def render_labeled_source(label: str, text: str) -> None:
+    """Display a citation label and its passage without layered controls."""
+    st.markdown(
+        f'<p class="passage-label">{html.escape(label)}</p>',
+        unsafe_allow_html=True,
+    )
+    render_source_text(text)
 
 
 def run_search(
     query: str,
     *,
-    prototype_mode: bool,
     court: str | None,
     date_from: date,
     date_to: date,
     provision: str | None,
+    search_function: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Use sample records now and the retrieval module when it is complete."""
-    if prototype_mode:
-        return demo_search(
-            court=court,
-            date_from=date_from,
-            date_to=date_to,
-            provision=provision,
-        )
+    """Pass the form values to the shared hybrid retrieval function."""
+    if search_function is None:
+        from retrieval.retrieve import search
 
-    from retrieval.retrieve import search
+        search_function = search
 
-    return search(
+    return search_function(
         query,
         court=court,
         date_from=date_from.isoformat(),
@@ -639,11 +558,13 @@ def render_legislation(item: dict[str, Any], position: int) -> None:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f"<p class='match-note'>{item.get('match_label', '')}</p>",
+                "<p class='match-note'>Hybrid retrieval result</p>",
                 unsafe_allow_html=True,
             )
-            with st.expander("Read cited provision", expanded=True):
-                render_source_text(item["text"])
+            render_labeled_source(
+                f"Cited provision · {item['provision']}",
+                item["text"],
+            )
             st.link_button("Official source", item["url"])
 
 
@@ -668,21 +589,25 @@ def render_judgment(item: dict[str, Any], position: int) -> None:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f"<p class='match-note'>{item.get('match_label', '')}</p>",
+                "<p class='match-note'>Hybrid retrieval result</p>",
                 unsafe_allow_html=True,
             )
 
             if item.get("citation_available"):
                 citation = paragraph_label(item.get("paragraph_numbers", []))
-                with st.expander(f"Read cited passage {citation}", expanded=True):
-                    render_source_text(item["text"])
+                render_labeled_source(
+                    f"Cited passage · {citation}",
+                    item["text"],
+                )
             else:
                 st.warning(
                     "This passage can be searched, but a reliable paragraph "
                     "number is not available."
                 )
-                with st.expander("Read passage"):
-                    render_source_text(item["text"])
+                render_labeled_source(
+                    "Passage without pinpoint citation",
+                    item["text"],
+                )
 
             st.link_button("Official source", item["url"])
 
@@ -714,6 +639,13 @@ def render_results(results: list[dict[str, Any]]) -> None:
     else:
         visible_results = results
 
+    if not visible_results:
+        st.info(
+            f"No {view.split()[0].lower()} passages were returned for this "
+            "search. Choose another result type or run a broader search."
+        )
+        return
+
     for position, item in enumerate(visible_results, start=1):
         if item.get("document_type") == "legislation":
             render_legislation(item, position)
@@ -727,6 +659,11 @@ def main() -> None:
         layout="wide",
     )
     add_page_styles()
+
+    if "search_results" not in st.session_state:
+        st.session_state.search_results = None
+    if "search_query" not in st.session_state:
+        st.session_state.search_query = ""
 
     st.markdown(
         """
@@ -828,15 +765,10 @@ def main() -> None:
             vertical_alignment="bottom",
         )
         with action_copy:
-            prototype_mode = st.toggle(
-                "Use sample index",
-                value=True,
-                help="Turn this off when the live retrieval index is ready.",
+            st.caption(
+                "Hybrid search combines exact keyword matching with semantic "
+                "similarity."
             )
-            if prototype_mode:
-                st.caption(
-                    "Prototype mode is on. Results below are sample records."
-                )
         with action_button:
             submitted = st.form_submit_button(
                 "Run search",
@@ -844,7 +776,7 @@ def main() -> None:
                 use_container_width=True,
             )
 
-    if not submitted:
+    if not submitted and st.session_state.search_results is None:
         st.markdown(
             """
             <section class="search-guide">
@@ -878,29 +810,50 @@ def main() -> None:
         )
         return
 
-    if not query.strip():
-        st.error("Enter a situation or legal search term.")
-        return
+    if submitted:
+        st.session_state.search_results = None
+        st.session_state.search_query = query.strip()
 
-    if date_from > date_to:
-        st.error("The start date must be earlier than the end date.")
-        return
+        if not query.strip():
+            st.error("Enter a situation or legal search term.")
+            return
 
-    try:
-        with st.spinner("Searching the knowledge base..."):
-            results = run_search(
-                query,
-                prototype_mode=prototype_mode,
-                court=None if court_choice == "All courts" else court_choice,
-                date_from=date_from,
-                date_to=date_to,
-                provision=provision or None,
+        if date_from > date_to:
+            st.error("The start date must be earlier than the end date.")
+            return
+
+        try:
+            with st.spinner("Searching the knowledge base..."):
+                results = run_search(
+                    query,
+                    court=None if court_choice == "All courts" else court_choice,
+                    date_from=date_from,
+                    date_to=date_to,
+                    provision=provision or None,
+                )
+        except FileNotFoundError:
+            st.error(
+                "The local search index was not found. Run "
+                "`python scripts/build_indexes.py` from the project root, "
+                "then try again."
             )
-    except NotImplementedError:
-        st.error(
-            "The live retrieval module is not ready yet. Turn on "
-            "'Use sample index' to view the prototype."
-        )
+            return
+        except ValueError as error:
+            st.error(f"The search could not be completed: {error}")
+            return
+        except Exception as error:
+            st.error(
+                "The search service could not start. Check that the processed "
+                "data, model, and saved index are available."
+            )
+            with st.expander("Technical details"):
+                st.code(str(error))
+            return
+
+        st.session_state.search_results = results
+
+    results = st.session_state.search_results
+    if results is None:
         return
 
     if not results:
@@ -914,7 +867,7 @@ def main() -> None:
         '<h2 class="section-heading">Search results</h2>',
         unsafe_allow_html=True,
     )
-    safe_query = html.escape(query.strip())
+    safe_query = html.escape(st.session_state.search_query)
     st.markdown(
         f'<p class="search-summary">{len(results)} passages found for '
         f'<strong>{safe_query}</strong>. Results are ordered by relevance.</p>',

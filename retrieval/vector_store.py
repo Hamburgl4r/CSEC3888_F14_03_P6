@@ -14,7 +14,7 @@ import faiss
 import numpy as np
 import json
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 from pathlib import Path
 
 # Setup 
@@ -23,6 +23,7 @@ INDEX_DIR = Path("data/indexes")
 class VectorIndex(TypedDict):
     faiss: faiss.Index
     chunk_ids: list[str]
+    vectors: NotRequired[np.ndarray]
 
 
 
@@ -78,6 +79,12 @@ def save_index(index, path: Path = INDEX_DIR / "vectors") -> None:
     with open(ids_path, "w", encoding="utf-8") as f:
         json.dump(index["chunk_ids"], f)
 
+    # Keep a NumPy copy for the application runtime. On macOS, running
+    # PyTorch inference and a large FAISS search in the same process can
+    # crash because their native runtimes conflict.
+    vectors = index["faiss"].reconstruct_n(0, index["faiss"].ntotal)
+    np.save(path.with_suffix(".npy"), vectors)
+
 
 
 def load_index(path: Path = INDEX_DIR / "vectors") -> VectorIndex:
@@ -95,9 +102,16 @@ def load_index(path: Path = INDEX_DIR / "vectors") -> VectorIndex:
     with open(ids_path, "r", encoding="utf-8") as f:
         chunk_ids = json.load(f)
 
+    vectors_path = path.with_suffix(".npy")
+    if not vectors_path.exists():
+        raise FileNotFoundError(
+            f"{vectors_path} is missing; rebuild the search index"
+        )
+
     return {
         "faiss": faiss_index,
         "chunk_ids": chunk_ids,
+        "vectors": np.load(vectors_path, mmap_mode="r"),
     }
 
 
@@ -123,6 +137,17 @@ def search_vectors(index: VectorIndex,
         )
 
     k = min(top_k, len(index["chunk_ids"]))
+
+    if "vectors" in index:
+        scores = np.asarray(index["vectors"] @ query_vector[0])
+        candidate_positions = np.argpartition(scores, -k)[-k:]
+        positions = candidate_positions[
+            np.argsort(scores[candidate_positions])[::-1]
+        ]
+        return [
+            (index["chunk_ids"][int(position)], float(scores[position]))
+            for position in positions
+        ]
 
     # perform vector similarity search
     scores, positions = index["faiss"].search(

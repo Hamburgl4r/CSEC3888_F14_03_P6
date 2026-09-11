@@ -187,3 +187,78 @@ def test_invalid_date_range_raises_error():
             date_from="2022-01-01",
             date_to="2020-01-01",
         )
+
+
+def test_ui_filters_keep_legislation_and_match_linked_judgment_sections():
+    legislation = {
+        "chunk_id": "act_5d",
+        "document_type": "legislation",
+        "provision_id": "s_5D",
+        "section": "5D",
+        "date": "2022-06-16",
+    }
+    judgment = {
+        "chunk_id": "case_5d",
+        "document_type": "judgment",
+        "court": "NSWCA",
+        "date": "2019-03-01",
+        "legislation_sections": ["5D"],
+    }
+
+    results = retrieve.apply_filters(
+        [legislation, judgment],
+        court="NSWCA",
+        date_from="2018-01-01",
+        date_to="2020-01-01",
+        provision="s 5D",
+    )
+
+    assert [result["chunk_id"] for result in results] == [
+        "act_5d",
+        "case_5d",
+    ]
+
+
+def test_provision_search_places_the_act_section_before_cases(monkeypatch):
+    chunks = {
+        "act_5d": {
+            "chunk_id": "act_5d",
+            "document_type": "legislation",
+            "provision_id": "s_5D",
+            "section": "5D",
+        },
+        "case_5d": {
+            "chunk_id": "case_5d",
+            "document_type": "judgment",
+            "court": "NSWCA",
+            "date": "2019-03-01",
+            "legislation_sections": ["5D"],
+        },
+    }
+    monkeypatch.setattr(
+        retrieve,
+        "_load_search_resources",
+        lambda: (chunks, "bm25", "vectors", "encoder"),
+    )
+    monkeypatch.setattr(retrieve, "embed_query", lambda query, encoder: [1.0])
+    monkeypatch.setattr(
+        retrieve,
+        "search_bm25",
+        lambda index, query, top_k: [("case_5d", 2.0)],
+    )
+    monkeypatch.setattr(
+        retrieve,
+        "search_vectors",
+        lambda index, query, top_k: [("case_5d", 0.9)],
+    )
+
+    results = retrieve.search(
+        "section 5D causation",
+        provision="s 5D",
+        top_k=2,
+    )
+
+    assert [result["chunk_id"] for result in results] == [
+        "act_5d",
+        "case_5d",
+    ]

@@ -79,7 +79,28 @@ data/processed/legislation_chunks.jsonl
 data/processed/processing_report.json
 ```
 
-### 7. Deactivate the Virtual Environment
+### 7. Build the Search Index
+
+Build the saved vector index after processing the corpus:
+
+```bash
+python scripts/build_indexes.py
+```
+
+This is a one-time operation. It creates the local files under
+`data/indexes/` used by the application. The first run downloads the embedding
+model.
+
+### 8. Run the Web Application
+
+```bash
+streamlit run app.py
+```
+
+The first search loads the model and indexes. Later searches in the same
+session are substantially faster.
+
+### 9. Deactivate the Virtual Environment
 
 ```bash
 deactivate

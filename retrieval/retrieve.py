@@ -17,10 +17,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from datetime import date
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import json
+import re
 
 from retrieval.bm25 import build_index as build_bm25_index
 from retrieval.bm25 import search_bm25
@@ -56,7 +56,9 @@ def _load_search_resources():
         chunks_by_id,
         build_bm25_index(texts, chunk_ids),
         load_vector_index(),
-        load_encoder(),
+        # Query encoding is a small operation. CPU is more portable and avoids
+        # MPS thread crashes when Streamlit runs the page on macOS.
+        load_encoder(device="cpu"),
     )
 
 
@@ -128,6 +130,37 @@ def reciprocal_rank_fusion(
     )
 
 
+def _normalise_provision(value: Any) -> str:
+    """Return a comparable base provision such as ``5d``."""
+    text = str(value).strip().casefold()
+    text = re.sub(r"^(?:section|sec|s)[\s_]*", "", text)
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+def _chunk_provisions(chunk: dict[str, Any]) -> set[str]:
+    """Collect provision identifiers used by either output record type."""
+    values: list[Any] = []
+
+    for field in (
+        "provision_id",
+        "provision",
+        "section",
+        "legislation_sections",
+        "document_legislation_sections",
+    ):
+        value = chunk.get(field)
+        if isinstance(value, list):
+            values.extend(value)
+        elif value is not None:
+            values.append(value)
+
+    return {
+        normalised
+        for value in values
+        if (normalised := _normalise_provision(value))
+    }
+
+
 def apply_filters(
     chunks: list[dict[str, Any]],
     *,
@@ -146,7 +179,14 @@ def apply_filters(
     filtered_chunks = []
 
     for chunk in chunks:
-        if court is not None:
+        is_judgment = (
+            chunk.get("document_type") == "judgment"
+            or isinstance(chunk.get("court"), str)
+        )
+
+        # Court and decision-date filters apply to judgments. Legislation has
+        # no court and should remain independently retrievable.
+        if court is not None and is_judgment:
             chunk_court = chunk.get("court")
 
             if (
@@ -155,7 +195,7 @@ def apply_filters(
             ):
                 continue
 
-        if start_date is not None or end_date is not None:
+        if is_judgment and (start_date is not None or end_date is not None):
             chunk_date_value = chunk.get("date")
 
             if not chunk_date_value:
@@ -173,16 +213,10 @@ def apply_filters(
                 continue
 
         if provision is not None:
-            chunk_provisions = chunk.get("provision_id")
-
-            if isinstance(chunk_provisions, str):
-                chunk_provisions = [chunk_provisions]
-            elif not isinstance(chunk_provisions, list):
-                chunk_provisions = []
-
-            if not any(
-                str(item).casefold() == provision.casefold()
-                for item in chunk_provisions
+            requested_provision = _normalise_provision(provision)
+            if (
+                not requested_provision
+                or requested_provision not in _chunk_provisions(chunk)
             ):
                 continue
 
@@ -216,21 +250,20 @@ def search(
     # Retrieve extra candidates because the selected filters may remove hits.
     candidate_count = min(len(chunks_by_id), max(top_k * 5, 50))
 
-    def run_vector_search() -> list[tuple[str, float]]:
-        query_vector = embed_query(query.strip(), encoder)
-        return search_vectors(vector_index, query_vector, candidate_count)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        bm25_future = executor.submit(
-            search_bm25,
-            bm25_index,
-            query.strip(),
-            candidate_count,
-        )
-        vector_future = executor.submit(run_vector_search)
-
-        bm25_hits = bm25_future.result()
-        vector_hits = vector_future.result()
+    # Native PyTorch and FAISS operations can be unstable when mixed in a
+    # Python worker pool on macOS. The lookups are fast, so run them
+    # sequentially and fuse the two independent rankings afterwards.
+    query_vector = embed_query(query.strip(), encoder)
+    bm25_hits = search_bm25(
+        bm25_index,
+        query.strip(),
+        candidate_count,
+    )
+    vector_hits = search_vectors(
+        vector_index,
+        query_vector,
+        candidate_count,
+    )
 
     fused_hits = reciprocal_rank_fusion(bm25_hits, vector_hits)
 
@@ -254,5 +287,27 @@ def search(
         date_to=date_to,
         provision=provision,
     )
+
+    if provision is not None:
+        # R1 requires an exact section lookup to return the provision itself
+        # as well as cases applying it. Promote matching legislation ahead of
+        # the ranked judgment passages.
+        legislation_matches = apply_filters(
+            [
+                chunk
+                for chunk in chunks_by_id.values()
+                if chunk.get("document_type") == "legislation"
+            ],
+            provision=provision,
+        )
+        legislation_ids = {
+            chunk.get("chunk_id")
+            for chunk in legislation_matches
+        }
+        filtered_chunks = legislation_matches + [
+            chunk
+            for chunk in filtered_chunks
+            if chunk.get("chunk_id") not in legislation_ids
+        ]
 
     return filtered_chunks[:top_k]

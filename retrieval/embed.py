@@ -21,12 +21,18 @@ DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
-def load_encoder(model_name: str = DEFAULT_MODEL_NAME):
+def load_encoder(
+    model_name: str = DEFAULT_MODEL_NAME,
+    device: str | None = None,
+):
     """Load the sentence transformer once and reuse it.
 
     Keep the returned object in memory. Do not reload the model on every query.
     """
-    encoder = SentenceTransformer(model_name)
+    if device is None:
+        encoder = SentenceTransformer(model_name)
+    else:
+        encoder = SentenceTransformer(model_name, device=device)
     return encoder
 
 

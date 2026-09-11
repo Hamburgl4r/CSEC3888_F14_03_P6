@@ -57,6 +57,7 @@ def main() -> None:
     print("Index successfully created:")
     print("  data/indexes/vectors.faiss")
     print("  data/indexes/vectors_ids.json")
+    print("  data/indexes/vectors.npy")
 
 
 if __name__ == "__main__":
