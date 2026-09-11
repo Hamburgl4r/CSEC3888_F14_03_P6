@@ -1,54 +1,937 @@
-"""Streamlit page for the September retrieval demo.
+"""Streamlit prototype for the Civil Liability Act research application.
 
-The 14 September checkpoint needs search over the real corpus and a click
-through to the correct paragraph. Generated answers are not required yet.
-
-Run from the repository root once the retrieval functions are implemented:
+Run from the repository root:
 
     streamlit run app.py
+
+Prototype mode uses a few sample records while the retrieval modules are being
+completed. Turn it off when ``retrieval.retrieve.search`` is ready.
 """
 
 from __future__ import annotations
 
+import html
+from datetime import date
+from typing import Any
 
-def main() -> None:
-    import streamlit as st
+import streamlit as st
+
+
+DEMO_RESULTS: list[dict[str, Any]] = [
+    {
+        "chunk_id": "nsw_legislation:2022-06-16/act-2002-022_s_5D",
+        "document_type": "legislation",
+        "citation": "Civil Liability Act 2002 (NSW)",
+        "date": "2022-06-16",
+        "url": (
+            "https://legislation.nsw.gov.au/view/whole/html/inforce/"
+            "2022-06-16/act-2002-022"
+        ),
+        "provision_id": "s_5D",
+        "provision": "s 5D",
+        "heading": "General principles",
+        "part_heading": "Part 1A Negligence",
+        "division_heading": "Division 3 Causation",
+        "text": (
+            "5D General principles\n\n"
+            "(1) A determination that negligence caused particular harm "
+            "comprises the following elements:\n\n"
+            "(a) that the negligence was a necessary condition of the "
+            "occurrence of the harm (factual causation), and\n\n"
+            "(b) that it is appropriate for the scope of the negligent "
+            "person's liability to extend to the harm so caused "
+            "(scope of liability)."
+        ),
+        "match_label": "Matched by keyword and meaning",
+        "score": 0.94,
+    },
+    {
+        "chunk_id": "nsw_caselaw:549f69543004262463a4a639_chunk_1",
+        "document_type": "judgment",
+        "citation": "Mudford v Great Lakes Council [2010] NSWDC 109",
+        "court": "NSWDC",
+        "date": "2010-06-17",
+        "url": (
+            "https://www.caselaw.nsw.gov.au/decision/"
+            "549f69543004262463a4a639"
+        ),
+        "catchwords": (
+            "Contributory negligence; slip and fall; adequacy of access; "
+            "warning of danger"
+        ),
+        "paragraph_start": 1,
+        "paragraph_end": 3,
+        "paragraph_numbers": [1, 2, 3],
+        "citation_available": True,
+        "legislation_sections": [],
+        "text": (
+            "[1] Graeme Mudford slipped on a grassed bank in the Forster "
+            "Beach Caravan Park on 29 October 2005. He suffered a serious "
+            "fracture to his right leg in the fall.\n\n"
+            "[2] The plaintiff claimed that the defendant breached its duty "
+            "of care. The defendant denied negligence and claimed "
+            "contributory negligence.\n\n"
+            "[3] The issues included whether adequate provision was made for "
+            "pedestrian movement and whether a warning or barrier was needed."
+        ),
+        "match_label": "Matched by meaning",
+        "score": 0.88,
+    },
+]
+
+
+def add_page_styles() -> None:
+    """Apply the visual system used by the research interface."""
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,650;6..72,750&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+        :root {
+            --ink: #18242a;
+            --muted: #5a696e;
+            --navy: #0b2735;
+            --navy-soft: #163b4a;
+            --paper: #f2eee5;
+            --surface: #fffdf8;
+            --line: #9ba6a8;
+            --accent: #db4d2f;
+            --accent-dark: #b83821;
+            --gold: #e8b949;
+            --body: "Space Grotesk", "Avenir Next", "Century Gothic", sans-serif;
+            --display: "Newsreader", Georgia, "Times New Roman", serif;
+        }
+
+        .stApp,
+        [data-testid="stAppViewContainer"] {
+            background: var(--paper);
+            color: var(--ink);
+            font-family: var(--body);
+        }
+
+        header[data-testid="stHeader"] {
+            background: var(--navy);
+            border-bottom: 4px solid var(--accent);
+        }
+
+        .block-container {
+            max-width: 1260px;
+            padding: 4rem 3rem 5rem;
+        }
+
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3 {
+            font-family: var(--display);
+        }
+
+        .masthead {
+            align-items: center;
+            border-bottom: 1px solid var(--navy);
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2.35rem;
+            padding-bottom: 0.8rem;
+        }
+
+        .masthead-name {
+            color: var(--navy);
+            font-family: var(--display);
+            font-size: 1.35rem;
+            font-weight: 750;
+            letter-spacing: -0.025em;
+        }
+
+        .masthead-scope {
+            color: var(--muted);
+            font-size: 0.69rem;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+
+        .hero-copy {
+            animation: reveal-up 420ms ease-out both;
+            padding: 0.65rem 2.5rem 1.3rem 0;
+        }
+
+        .hero-kicker {
+            align-items: center;
+            color: var(--accent);
+            display: flex;
+            font-size: 0.7rem;
+            font-weight: 700;
+            gap: 0.7rem;
+            letter-spacing: 0.13em;
+            margin: 0 0 1rem;
+            text-transform: uppercase;
+        }
+
+        .hero-kicker::before {
+            background: var(--accent);
+            content: "";
+            height: 2px;
+            width: 2.75rem;
+        }
+
+        .page-title {
+            color: var(--navy);
+            font-family: var(--display);
+            font-size: clamp(3.15rem, 6.8vw, 6.2rem);
+            font-weight: 650;
+            letter-spacing: -0.06em;
+            line-height: 0.88;
+            margin: 0;
+            max-width: 850px;
+        }
+
+        .page-intro {
+            color: var(--muted);
+            font-size: 1.03rem;
+            line-height: 1.65;
+            margin: 1.55rem 0 0 5.7rem;
+            max-width: 740px;
+        }
+
+        .collection-line {
+            align-items: center;
+            border-bottom: 1px solid #aab2b4;
+            border-top: 1px solid #aab2b4;
+            color: var(--navy);
+            display: flex;
+            flex-wrap: wrap;
+            font-size: 0.66rem;
+            font-weight: 700;
+            gap: 0;
+            letter-spacing: 0.1em;
+            margin: 1.35rem 0 0 5.7rem;
+            max-width: 740px;
+            padding: 0.65rem 0;
+            text-transform: uppercase;
+        }
+
+        .collection-line span + span::before {
+            color: var(--accent);
+            content: "/";
+            padding: 0 0.8rem;
+        }
+
+        .trust-strip {
+            background: var(--gold);
+            color: #2a261b;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            margin: 0 0 1.65rem 5.7rem;
+            max-width: 740px;
+            padding: 0.8rem 1rem;
+        }
+
+        .trust-strip strong {
+            color: #17140d;
+        }
+
+        .form-label {
+            color: var(--accent);
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.13em;
+            margin-bottom: 0.35rem;
+            text-transform: uppercase;
+        }
+
+        .form-heading {
+            color: var(--navy);
+            font-family: var(--display);
+            font-size: 2rem;
+            font-weight: 650;
+            letter-spacing: -0.025em;
+            line-height: 1.1;
+            margin: 0 0 1.2rem;
+        }
+
+        .filter-heading {
+            border-bottom: 1px solid #96a2a6;
+            color: var(--navy);
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            margin-bottom: 0.85rem;
+            padding-bottom: 0.65rem;
+            text-transform: uppercase;
+        }
+
+        .section-heading {
+            align-items: baseline;
+            border-bottom: 2px solid var(--navy);
+            color: var(--navy);
+            display: flex;
+            font-family: var(--display);
+            font-size: 2rem;
+            font-weight: 650;
+            justify-content: space-between;
+            letter-spacing: -0.025em;
+            margin: 4rem 0 0.7rem;
+            padding-bottom: 0.7rem;
+        }
+
+        .search-summary {
+            color: var(--muted);
+            font-size: 0.88rem;
+            margin-bottom: 1.4rem;
+        }
+
+        .result-index {
+            color: var(--accent);
+            font-family: var(--display);
+            font-size: 2.5rem;
+            font-weight: 650;
+            letter-spacing: -0.06em;
+            line-height: 1;
+            padding-top: 0.2rem;
+        }
+
+        .result-type {
+            color: var(--accent);
+            font-size: 0.66rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            margin: 0 0 0.45rem;
+            text-transform: uppercase;
+        }
+
+        .result-meta {
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.55;
+            margin: -0.2rem 0 0.45rem;
+        }
+
+        .match-note {
+            color: #68787d;
+            font-size: 0.72rem;
+            margin: 0 0 0.95rem;
+        }
+
+        .source-text {
+            background: #e9e4da;
+            border-left: 5px solid var(--navy-soft);
+            color: #17252b;
+            font-family: var(--display);
+            font-size: 1rem;
+            line-height: 1.72;
+            padding: 1.2rem 1.35rem;
+        }
+
+        div[data-testid="stForm"] {
+            background: var(--surface);
+            border: 2px solid var(--navy);
+            border-radius: 0;
+            box-shadow: 9px 9px 0 var(--navy);
+            margin: 0 9px 3rem 0;
+            padding: 1.6rem 1.7rem 1rem;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: transparent;
+            border: 0 !important;
+            border-bottom: 1px solid #aab2b4 !important;
+            border-radius: 0;
+            border-top: 2px solid var(--navy) !important;
+            padding: 1.45rem 0 1.6rem;
+            transition: border-color 150ms ease, transform 150ms ease;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+            border-top-color: var(--accent) !important;
+            transform: translateX(5px);
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] h3 {
+            color: var(--navy) !important;
+            font-family: var(--display);
+            font-size: 1.55rem;
+            font-weight: 650;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+        }
+
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stTextInput"] input,
+        [data-baseweb="select"] > div,
+        [data-baseweb="input"] > div {
+            background: #fffefb !important;
+            border-color: #7f8e93 !important;
+            border-radius: 0 !important;
+            color: var(--ink) !important;
+            font-family: var(--body) !important;
+        }
+
+        [data-testid="stTextArea"] textarea::placeholder,
+        [data-testid="stTextInput"] input::placeholder {
+            color: #65757d !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stFormSubmitButton"] button {
+            background: var(--accent) !important;
+            border: 2px solid var(--accent) !important;
+            border-radius: 0 !important;
+            color: #ffffff !important;
+            font-family: var(--body) !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.03em;
+            min-height: 2.9rem;
+            transition: background 130ms ease, transform 130ms ease;
+        }
+
+        [data-testid="stFormSubmitButton"] button:hover {
+            background: var(--accent-dark) !important;
+            border-color: var(--accent-dark) !important;
+            transform: translate(-3px, -3px);
+        }
+
+        [data-testid="stLinkButton"] a {
+            background: transparent;
+            border: 1px solid var(--navy);
+            border-radius: 0;
+            color: var(--navy) !important;
+            font-family: var(--body);
+            transition: background 130ms ease, color 130ms ease;
+        }
+
+        [data-testid="stLinkButton"] a:hover {
+            background: var(--navy);
+            color: #ffffff !important;
+        }
+
+        [data-testid="stExpander"] {
+            background: transparent;
+            border: 1px solid #98a4a8 !important;
+            border-radius: 0 !important;
+        }
+
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary * {
+            color: var(--navy) !important;
+            font-family: var(--body);
+            font-weight: 600;
+        }
+
+        [data-testid="stRadio"] label {
+            border: 1px solid #879398;
+            margin-right: -1px;
+            padding: 0.4rem 0.8rem;
+            transition: background 120ms ease, color 120ms ease;
+        }
+
+        [data-testid="stRadio"] label:has(input:checked) {
+            background: var(--navy);
+            color: #ffffff !important;
+        }
+
+        [data-testid="stRadio"] label:has(input:checked) * {
+            color: #ffffff !important;
+        }
+
+        [data-testid="stAlert"] {
+            color: var(--ink);
+        }
+
+        .search-guide {
+            border-bottom: 1px solid var(--navy);
+            border-top: 2px solid var(--navy);
+            display: grid;
+            grid-template-columns: 1.2fr 0.8fr 1fr;
+            margin: 4.5rem 0 0;
+        }
+
+        .guide-item {
+            min-height: 165px;
+            padding: 1.25rem 1.5rem 1.5rem 0;
+        }
+
+        .guide-item + .guide-item {
+            border-left: 1px solid #aab2b4;
+            padding-left: 1.5rem;
+        }
+
+        .guide-number {
+            color: var(--accent);
+            font-family: var(--display);
+            font-size: 1.8rem;
+            font-weight: 650;
+        }
+
+        .guide-title {
+            color: var(--navy);
+            font-family: var(--display);
+            font-size: 1.2rem;
+            font-weight: 650;
+            margin: 0.5rem 0;
+        }
+
+        .guide-copy {
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.55;
+        }
+
+        .footer-note {
+            border-top: 1px solid var(--line);
+            color: #647277;
+            font-size: 0.72rem;
+            line-height: 1.5;
+            margin-top: 3rem;
+            padding-top: 1rem;
+        }
+
+        @keyframes reveal-up {
+            from {
+                opacity: 0;
+                transform: translateY(12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation: none !important;
+                scroll-behavior: auto !important;
+                transition: none !important;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .block-container {
+                padding: 4.8rem 1.25rem 3rem;
+            }
+            .masthead {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+            .page-title {
+                font-size: 3.15rem;
+            }
+            .page-intro,
+            .collection-line,
+            .trust-strip {
+                margin-left: 0;
+            }
+            .search-guide {
+                display: block;
+            }
+            .guide-item + .guide-item {
+                border-left: 0;
+                border-top: 1px solid #aab2b4;
+                padding-left: 0;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def paragraph_label(numbers: list[int]) -> str:
+    """Return a short citation label for one or more paragraph numbers."""
+    if not numbers:
+        return "Paragraph unavailable"
+    if len(numbers) == 1:
+        return f"[{numbers[0]}]"
+    return f"[{numbers[0]}]-[{numbers[-1]}]"
+
+
+def render_source_text(text: str) -> None:
+    """Display source text with safe HTML and readable legal typography."""
+    escaped = html.escape(text).replace("\n", "<br>")
+    st.markdown(
+        f'<div class="source-text">{escaped}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def demo_search(
+    *,
+    court: str | None,
+    date_from: date,
+    date_to: date,
+    provision: str | None,
+) -> list[dict[str, Any]]:
+    """Filter the sample records so the prototype controls can be tested."""
+    results: list[dict[str, Any]] = []
+    normalised_provision = (provision or "").lower().replace(" ", "")
+
+    for item in DEMO_RESULTS:
+        item_date = date.fromisoformat(item["date"])
+        if item_date < date_from or item_date > date_to:
+            continue
+        if court and item["document_type"] == "judgment":
+            if item.get("court") != court:
+                continue
+        if normalised_provision:
+            searchable = " ".join(
+                [
+                    item.get("provision", ""),
+                    item.get("provision_id", ""),
+                    " ".join(item.get("legislation_sections", [])),
+                    item.get("text", ""),
+                ]
+            ).lower().replace(" ", "")
+            if normalised_provision not in searchable:
+                continue
+        results.append(item)
+
+    return results
+
+
+def run_search(
+    query: str,
+    *,
+    prototype_mode: bool,
+    court: str | None,
+    date_from: date,
+    date_to: date,
+    provision: str | None,
+) -> list[dict[str, Any]]:
+    """Use sample records now and the retrieval module when it is complete."""
+    if prototype_mode:
+        return demo_search(
+            court=court,
+            date_from=date_from,
+            date_to=date_to,
+            provision=provision,
+        )
 
     from retrieval.retrieve import search
 
-    st.set_page_config(page_title="CLA research demo", layout="wide")
-    st.title("Civil Liability Act research")
-    st.caption(
-        "This tool reports what the documents say. It is not legal advice."
+    return search(
+        query,
+        court=court,
+        date_from=date_from.isoformat(),
+        date_to=date_to.isoformat(),
+        provision=provision,
     )
 
-    query = st.text_input("Describe the situation")
-    court = st.selectbox("Court", ["All", "NSWSC", "NSWCA", "NSWDC"])
-    date_from = st.text_input("Date from (YYYY-MM-DD)", value="2010-01-01")
-    date_to = st.text_input("Date to (YYYY-MM-DD)")
-    provision = st.text_input("Provision (for example 5D)")
 
-    if not st.button("Search") or not query.strip():
+def render_legislation(item: dict[str, Any], position: int) -> None:
+    """Display one legislation result and its exact provision text."""
+    with st.container(border=True):
+        marker, content = st.columns([0.1, 0.9], gap="medium")
+        with marker:
+            st.markdown(
+                f'<div class="result-index">{position:02}</div>',
+                unsafe_allow_html=True,
+            )
+        with content:
+            st.markdown(
+                '<p class="result-type">Legislation</p>',
+                unsafe_allow_html=True,
+            )
+            st.subheader(f"{item['provision']} {item.get('heading', '')}")
+            st.markdown(
+                f"<p class='result-meta'>{item.get('part_heading', '')} "
+                f"· {item.get('division_heading', '')}</p>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<p class='match-note'>{item.get('match_label', '')}</p>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("Read cited provision", expanded=True):
+                render_source_text(item["text"])
+            st.link_button("Official source", item["url"])
+
+
+def render_judgment(item: dict[str, Any], position: int) -> None:
+    """Display one judgment result with a safe paragraph citation."""
+    with st.container(border=True):
+        marker, content = st.columns([0.1, 0.9], gap="medium")
+        with marker:
+            st.markdown(
+                f'<div class="result-index">{position:02}</div>',
+                unsafe_allow_html=True,
+            )
+        with content:
+            st.markdown(
+                '<p class="result-type">Judgment</p>',
+                unsafe_allow_html=True,
+            )
+            st.subheader(item["citation"])
+            st.markdown(
+                f"<p class='result-meta'>{item.get('court', '')} "
+                f"· {item.get('date', '')} · {item.get('catchwords', '')}</p>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<p class='match-note'>{item.get('match_label', '')}</p>",
+                unsafe_allow_html=True,
+            )
+
+            if item.get("citation_available"):
+                citation = paragraph_label(item.get("paragraph_numbers", []))
+                with st.expander(f"Read cited passage {citation}", expanded=True):
+                    render_source_text(item["text"])
+            else:
+                st.warning(
+                    "This passage can be searched, but a reliable paragraph "
+                    "number is not available."
+                )
+                with st.expander("Read passage"):
+                    render_source_text(item["text"])
+
+            st.link_button("Official source", item["url"])
+
+
+def render_results(results: list[dict[str, Any]]) -> None:
+    """Separate legislation and judgment results as required by the brief."""
+    legislation = [
+        item for item in results if item.get("document_type") == "legislation"
+    ]
+    judgments = [
+        item for item in results if item.get("document_type") == "judgment"
+    ]
+
+    view = st.radio(
+        "Result type",
+        [
+            f"All {len(results)}",
+            f"Legislation {len(legislation)}",
+            f"Judgments {len(judgments)}",
+        ],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if view.startswith("Legislation"):
+        visible_results = legislation
+    elif view.startswith("Judgments"):
+        visible_results = judgments
+    else:
+        visible_results = results
+
+    for position, item in enumerate(visible_results, start=1):
+        if item.get("document_type") == "legislation":
+            render_legislation(item, position)
+        else:
+            render_judgment(item, position)
+
+def main() -> None:
+    st.set_page_config(
+        page_title="CLA Research",
+        page_icon="§",
+        layout="wide",
+    )
+    add_page_styles()
+
+    st.markdown(
+        """
+        <div class="masthead">
+            <span class="masthead-name">CLA / NSW</span>
+            <span class="masthead-scope">Research index · prototype 01</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="hero-copy">
+            <p class="hero-kicker">NSW legal research</p>
+            <h1 class="page-title">Find the paragraph that matters.</h1>
+            <p class="page-intro">
+                Search the <em>Civil Liability Act 2002</em> and the NSW
+                judgments that apply it. Start with facts, a section, or the
+                name of a case.
+            </p>
+            <p class="collection-line">
+                <span>2,386 judgments</span>
+                <span>1 Act</span>
+                <span>3 NSW courts</span>
+                <span>2010 onward</span>
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="trust-strip">
+            <strong>Research material, not legal advice.</strong>
+            This service reports what published documents say and does not
+            predict outcomes. Check every result against the official source.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("search_form"):
+        question_column, filter_column = st.columns(
+            [1.7, 0.85],
+            gap="large",
+            vertical_alignment="top",
+        )
+        with question_column:
+            st.markdown(
+                """
+                <p class="form-label">Research query</p>
+                <p class="form-heading">What happened?</p>
+                """,
+                unsafe_allow_html=True,
+            )
+            query = st.text_area(
+                "Research question",
+                placeholder=(
+                    "Example: A visitor slipped on a wet supermarket floor. "
+                    "Which provisions and cases discuss reasonable precautions "
+                    "and causation?"
+                ),
+                height=178,
+                label_visibility="collapsed",
+            )
+            st.caption(
+                "Plain language works. Exact case names and section numbers "
+                "work too."
+            )
+
+        with filter_column:
+            st.markdown(
+                '<p class="filter-heading">Limit the search</p>',
+                unsafe_allow_html=True,
+            )
+            court_choice = st.selectbox(
+                "Court",
+                ["All courts", "NSWSC", "NSWCA", "NSWDC"],
+            )
+            provision = st.text_input(
+                "Provision",
+                placeholder="For example, 5D",
+            )
+            date_columns = st.columns(2, gap="small")
+            with date_columns[0]:
+                date_from = st.date_input(
+                    "From",
+                    value=date(2010, 1, 1),
+                    min_value=date(2010, 1, 1),
+                )
+            with date_columns[1]:
+                date_to = st.date_input("To", value=date.today())
+
+        action_copy, action_button = st.columns(
+            [1.7, 0.85],
+            gap="large",
+            vertical_alignment="bottom",
+        )
+        with action_copy:
+            prototype_mode = st.toggle(
+                "Use sample index",
+                value=True,
+                help="Turn this off when the live retrieval index is ready.",
+            )
+            if prototype_mode:
+                st.caption(
+                    "Prototype mode is on. Results below are sample records."
+                )
+        with action_button:
+            submitted = st.form_submit_button(
+                "Run search",
+                type="primary",
+                use_container_width=True,
+            )
+
+    if not submitted:
+        st.markdown(
+            """
+            <section class="search-guide">
+                <div class="guide-item">
+                    <div class="guide-number">01</div>
+                    <div class="guide-title">Begin with the facts</div>
+                    <div class="guide-copy">
+                        Describe the situation as you understand it. Legal
+                        terminology is optional.
+                    </div>
+                </div>
+                <div class="guide-item">
+                    <div class="guide-number">02</div>
+                    <div class="guide-title">Narrow the record</div>
+                    <div class="guide-copy">
+                        Filter by court, date, or an exact provision such as
+                        5B or 5D.
+                    </div>
+                </div>
+                <div class="guide-item">
+                    <div class="guide-number">03</div>
+                    <div class="guide-title">Read the authority</div>
+                    <div class="guide-copy">
+                        Inspect the cited paragraph and open the official
+                        source before relying on a result.
+                    </div>
+                </div>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
         return
 
-    results = search(
-        query,
-        court=None if court == "All" else court,
-        date_from=date_from or None,
-        date_to=date_to or None,
-        provision=provision or None,
-    )
+    if not query.strip():
+        st.error("Enter a situation or legal search term.")
+        return
 
-    for item in results:
-        title = item.get("citation") or item.get("provision") or item.get("chunk_id")
-        st.subheader(title)
-        if item.get("citation_available"):
-            st.write("Paragraphs", item.get("paragraph_numbers"))
-        else:
-            st.write("No pinpoint paragraph citation for this passage.")
-        st.write(item.get("text", ""))
-        if item.get("url"):
-            st.markdown(f"[Source]({item['url']})")
+    if date_from > date_to:
+        st.error("The start date must be earlier than the end date.")
+        return
+
+    try:
+        with st.spinner("Searching the knowledge base..."):
+            results = run_search(
+                query,
+                prototype_mode=prototype_mode,
+                court=None if court_choice == "All courts" else court_choice,
+                date_from=date_from,
+                date_to=date_to,
+                provision=provision or None,
+            )
+    except NotImplementedError:
+        st.error(
+            "The live retrieval module is not ready yet. Turn on "
+            "'Use sample index' to view the prototype."
+        )
+        return
+
+    if not results:
+        st.info(
+            "No matching material was found. Try removing a filter or using "
+            "different words."
+        )
+        return
+
+    st.markdown(
+        '<h2 class="section-heading">Search results</h2>',
+        unsafe_allow_html=True,
+    )
+    safe_query = html.escape(query.strip())
+    st.markdown(
+        f'<p class="search-summary">{len(results)} passages found for '
+        f'<strong>{safe_query}</strong>. Results are ordered by relevance.</p>',
+        unsafe_allow_html=True,
+    )
+    render_results(results)
+
+    st.markdown(
+        """
+        <p class="footer-note">
+            Source collection: Open Australian Legal Corpus. Reproduced
+            material is provided for research and must be checked against the
+            official source.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":
