@@ -11,6 +11,7 @@ completed. Turn it off when ``retrieval.retrieve.search`` is ready.
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -239,10 +240,19 @@ def add_page_styles() -> None:
         }
 
         .result-meta {
-            color: var(--muted);
-            font-size: 0.82rem;
-            line-height: 1.55;
-            margin: -0.2rem 0 0.45rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin: -0.15rem 0 0.65rem;
+        }
+
+        .meta-tag {
+            background: #e9e4da;
+            border: 1px solid #b7afa2;
+            color: var(--navy);
+            font-size: 0.7rem;
+            line-height: 1.2;
+            padding: 0.28rem 0.45rem;
         }
 
         .match-note {
@@ -259,6 +269,12 @@ def add_page_styles() -> None:
             font-size: 1rem;
             line-height: 1.72;
             padding: 1.2rem 1.35rem;
+        }
+
+        .source-text mark {
+            background: #ffd86b;
+            color: inherit;
+            padding: 0 0.08em;
         }
 
         .passage-label {
@@ -360,9 +376,11 @@ def add_page_styles() -> None:
             border-radius: 0 !important;
         }
 
-        [data-testid="stExpander"] summary,
-        [data-testid="stExpander"] summary * {
+        [data-testid="stExpander"] summary {
             color: var(--navy) !important;
+        }
+
+        [data-testid="stExpander"] summary p {
             font-family: var(--body);
             font-weight: 600;
         }
@@ -495,22 +513,66 @@ def paragraph_label(numbers: list[int]) -> str:
     return f"[{numbers[0]}]-[{numbers[-1]}]"
 
 
-def render_source_text(text: str) -> None:
+def highlighted_text(text: str, query: str) -> str:
+    """Escape source text and highlight useful literal query terms."""
+    terms = set(re.findall(r"\b[\w'-]{3,}\b", query))
+    if query.strip():
+        terms.add(query.strip())
+    if not terms:
+        return html.escape(text).replace("\n", "<br>")
+
+    pattern = re.compile(
+        "(" + "|".join(
+            re.escape(term) for term in sorted(terms, key=len, reverse=True)
+        ) + ")",
+        flags=re.IGNORECASE,
+    )
+    parts = pattern.split(text)
+    rendered = []
+    for index, part in enumerate(parts):
+        safe_part = html.escape(part).replace("\n", "<br>")
+        rendered.append(f"<mark>{safe_part}</mark>" if index % 2 else safe_part)
+    return "".join(rendered)
+
+
+def concise_excerpt(text: str, limit: int = 420) -> str:
+    """Return a compact result preview without cutting through a word."""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    shortened = compact[:limit].rsplit(" ", 1)[0]
+    return f"{shortened}…"
+
+
+def render_source_text(text: str, query: str) -> None:
     """Display source text with safe HTML and readable legal typography."""
-    escaped = html.escape(text).replace("\n", "<br>")
     st.markdown(
-        f'<div class="source-text">{escaped}</div>',
+        f'<div class="source-text">{highlighted_text(text, query)}</div>',
         unsafe_allow_html=True,
     )
 
 
-def render_labeled_source(label: str, text: str) -> None:
-    """Display a citation label and its passage without layered controls."""
+def render_labeled_source(label: str, text: str, query: str) -> None:
+    """Display a short preview with the complete passage on demand."""
     st.markdown(
         f'<p class="passage-label">{html.escape(label)}</p>',
         unsafe_allow_html=True,
     )
-    render_source_text(text)
+    render_source_text(concise_excerpt(text), query)
+    if len(" ".join(text.split())) > 420:
+        with st.expander("Expand passage"):
+            render_source_text(text, query)
+
+
+def render_metadata(*values: Any) -> None:
+    """Render non-empty metadata values as small, scannable tags."""
+    tags = "".join(
+        f'<span class="meta-tag">{html.escape(str(value))}</span>'
+        for value in values
+        if value
+    )
+    if tags:
+        st.markdown(f'<div class="result-meta">{tags}</div>', unsafe_allow_html=True)
 
 
 def run_search(
@@ -537,7 +599,7 @@ def run_search(
     )
 
 
-def render_legislation(item: dict[str, Any], position: int) -> None:
+def render_legislation(item: dict[str, Any], position: int, query: str) -> None:
     """Display one legislation result and its exact provision text."""
     with st.container(border=True):
         marker, content = st.columns([0.1, 0.9], gap="medium")
@@ -552,11 +614,7 @@ def render_legislation(item: dict[str, Any], position: int) -> None:
                 unsafe_allow_html=True,
             )
             st.subheader(f"{item['provision']} {item.get('heading', '')}")
-            st.markdown(
-                f"<p class='result-meta'>{item.get('part_heading', '')} "
-                f"· {item.get('division_heading', '')}</p>",
-                unsafe_allow_html=True,
-            )
+            render_metadata(item.get("part_heading"), item.get("division_heading"))
             st.markdown(
                 "<p class='match-note'>Hybrid retrieval result</p>",
                 unsafe_allow_html=True,
@@ -564,11 +622,12 @@ def render_legislation(item: dict[str, Any], position: int) -> None:
             render_labeled_source(
                 f"Cited provision · {item['provision']}",
                 item["text"],
+                query,
             )
             st.link_button("Official source", item["url"])
 
 
-def render_judgment(item: dict[str, Any], position: int) -> None:
+def render_judgment(item: dict[str, Any], position: int, query: str) -> None:
     """Display one judgment result with a safe paragraph citation."""
     with st.container(border=True):
         marker, content = st.columns([0.1, 0.9], gap="medium")
@@ -583,11 +642,14 @@ def render_judgment(item: dict[str, Any], position: int) -> None:
                 unsafe_allow_html=True,
             )
             st.subheader(item["citation"])
-            st.markdown(
-                f"<p class='result-meta'>{item.get('court', '')} "
-                f"· {item.get('date', '')} · {item.get('catchwords', '')}</p>",
-                unsafe_allow_html=True,
-            )
+            catchword_tags = [
+                word.strip()
+                for word in re.split(
+                    r";|\s+[–—-]\s+", str(item.get("catchwords", ""))
+                )
+                if word.strip()
+            ][:5]
+            render_metadata(item.get("court"), item.get("date"), *catchword_tags)
             st.markdown(
                 "<p class='match-note'>Hybrid retrieval result</p>",
                 unsafe_allow_html=True,
@@ -598,6 +660,7 @@ def render_judgment(item: dict[str, Any], position: int) -> None:
                 render_labeled_source(
                     f"Cited passage · {citation}",
                     item["text"],
+                    query,
                 )
             else:
                 st.warning(
@@ -607,12 +670,13 @@ def render_judgment(item: dict[str, Any], position: int) -> None:
                 render_labeled_source(
                     "Passage without pinpoint citation",
                     item["text"],
+                    query,
                 )
 
             st.link_button("Official source", item["url"])
 
 
-def render_results(results: list[dict[str, Any]]) -> None:
+def render_results(results: list[dict[str, Any]], query: str) -> None:
     """Separate legislation and judgment results as required by the brief."""
     legislation = [
         item for item in results if item.get("document_type") == "legislation"
@@ -646,11 +710,18 @@ def render_results(results: list[dict[str, Any]]) -> None:
         )
         return
 
-    for position, item in enumerate(visible_results, start=1):
+    shown = min(st.session_state.results_shown, len(visible_results))
+    for position, item in enumerate(visible_results[:shown], start=1):
         if item.get("document_type") == "legislation":
-            render_legislation(item, position)
+            render_legislation(item, position, query)
         else:
-            render_judgment(item, position)
+            render_judgment(item, position, query)
+
+    if shown < len(visible_results):
+        remaining = len(visible_results) - shown
+        if st.button(f"Load more ({remaining} remaining)", use_container_width=True):
+            st.session_state.results_shown += 5
+            st.rerun()
 
 def main() -> None:
     st.set_page_config(
@@ -664,6 +735,8 @@ def main() -> None:
         st.session_state.search_results = None
     if "search_query" not in st.session_state:
         st.session_state.search_query = ""
+    if "results_shown" not in st.session_state:
+        st.session_state.results_shown = 5
 
     st.markdown(
         """
@@ -813,6 +886,7 @@ def main() -> None:
     if submitted:
         st.session_state.search_results = None
         st.session_state.search_query = query.strip()
+        st.session_state.results_shown = 5
 
         if not query.strip():
             st.error("Enter a situation or legal search term.")
@@ -823,7 +897,10 @@ def main() -> None:
             return
 
         try:
-            with st.spinner("Searching the knowledge base..."):
+            with st.spinner(
+                "Searching judgments and legislation… The first semantic "
+                "search may take a little longer while the model loads."
+            ):
                 results = run_search(
                     query,
                     court=None if court_choice == "All courts" else court_choice,
@@ -873,7 +950,7 @@ def main() -> None:
         f'<strong>{safe_query}</strong>. Results are ordered by relevance.</p>',
         unsafe_allow_html=True,
     )
-    render_results(results)
+    render_results(results, st.session_state.search_query)
 
     st.markdown(
         """

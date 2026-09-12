@@ -3,7 +3,21 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from app import run_search
+from app import concise_excerpt, highlighted_text, run_search
+
+
+def test_concise_excerpt_is_short_and_does_not_cut_a_word():
+    excerpt = concise_excerpt("alpha beta gamma delta", limit=12)
+
+    assert excerpt == "alpha beta…"
+
+
+def test_highlighted_text_escapes_source_and_marks_query_terms():
+    rendered = highlighted_text("A <court> found a duty of care.", "duty of care")
+
+    assert "<court>" not in rendered
+    assert "&lt;court&gt;" in rendered
+    assert "<mark>duty of care</mark>" in rendered
 
 
 def test_run_search_passes_frontend_filters_to_retrieval():
